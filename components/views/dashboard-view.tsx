@@ -29,7 +29,7 @@ interface DashboardData {
 
 const statusLabel: Record<string,string> = {
   ready:"就绪", draft:"草稿", queued:"排队中", running:"运行中", completed:"已完成",
-  failed:"失败", waiting_for_human:"待人工处理", resumable:"可继续", assessing:"待能力测试",
+  failed:"失败", waiting_for_human:"待人工处理", resumable:"可继续", assessing:"待能力测试", diagnosed:"待确认规划",
 };
 const agentLabel: Record<string,string> = {llm:"LLM",ml:"ML",human:"人",tool:"工具"};
 const agentColor: Record<string,string> = {llm:"#5d7cff",ml:"#f3a950",human:"#9a76e8",tool:"#7e9a88"};

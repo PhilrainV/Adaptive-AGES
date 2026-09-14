@@ -6,6 +6,7 @@ import { Bot, BrainCircuit, Database, Download, GitBranch, KeyRound, LoaderCircl
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
 import {
   AbilityTestDialog,
+  type AbilityDiagnosis,
   type AbilityQuestion,
   type PlanningAgentTrace,
 } from "@/components/planning/ability-test-dialog";
@@ -76,7 +77,9 @@ function defaultConfig(kind: AgentKind): Record<string, unknown> {
 interface PlanningSession {
   session_id: string;
   task_id: string;
+  status?: "awaiting_answers" | "diagnosed";
   questions: AbilityQuestion[];
+  diagnosis?: AbilityDiagnosis | null;
   agent_trace: PlanningAgentTrace[];
 }
 
@@ -103,7 +106,9 @@ export function StudioView({
   const [execution,setExecution] = useState<Record<string, unknown> | null>(null);
   const [nodeApiKeys,setNodeApiKeys] = useState<Record<string,string>>({});
   const [planningSession,setPlanningSession] = useState<PlanningSession | null>(null);
-  const [submittingAssessment,setSubmittingAssessment] = useState(false);
+  const [diagnosis,setDiagnosis] = useState<AbilityDiagnosis | null>(null);
+  const [diagnosingAssessment,setDiagnosingAssessment] = useState(false);
+  const [planningWorkflow,setPlanningWorkflow] = useState(false);
   const customNodeCounter = useRef(0);
   const selected = useMemo(() => nodes.find(node => node.id === selectedId), [nodes, selectedId]);
   const selectedUsesDefault = selected?.data.config?.use_default_model !== false;
@@ -119,13 +124,20 @@ export function StudioView({
           setPlan(null); setNodes([]); setEdges([]); setSelectedId("");
           if (detail.planning_session) {
             setPlanningSession(detail.planning_session);
-            notify("已恢复该任务尚未完成的能力测试");
-          } else notify("该任务尚未完成能力测试和自动规划");
+            setDiagnosis(detail.planning_session.diagnosis || null);
+            notify(detail.planning_session.diagnosis
+              ? "已恢复能力诊断结果，请确认是否开始规划"
+              : "已恢复该任务尚未完成的能力测试");
+          } else {
+            setPlanningSession(null);
+            setDiagnosis(null);
+            notify("该任务尚未完成能力测试和自动规划");
+          }
           return;
         }
         const visual = layoutPlan(detail.workflow);
         setPlan(detail.workflow); setNodes(visual.nodes); setEdges(visual.edges);
-        setSelectedId(visual.nodes[0]?.id || "");
+        setSelectedId(visual.nodes[0]?.id || ""); setPlanningSession(null); setDiagnosis(null);
         notify(`已打开任务：${detail.task.title}`);
       })
       .catch(error => notify(error instanceof Error ? error.message : "任务读取失败"))
@@ -136,6 +148,7 @@ export function StudioView({
     if (task.trim().length < 8) return notify("请先输入更完整的任务需求");
     setPlanning(true);
     setExecution(null);
+    setDiagnosis(null);
     try {
       const session = await apiFetch<PlanningSession>("/planning-sessions/start", {
         method:"POST",
@@ -147,28 +160,58 @@ export function StudioView({
     finally { setPlanning(false); }
   };
 
-  const completeAssessment = async (answers: Record<string,number>) => {
+  const submitAssessment = async (answers: Record<string,number>) => {
     if (!planningSession) return;
-    setSubmittingAssessment(true);
+    setDiagnosingAssessment(true);
     try {
       const result = await apiFetch<{
-        diagnosis:{overall:number};
+        diagnosis:AbilityDiagnosis;
+        agent_trace:PlanningAgentTrace[];
+      }>(`/planning-sessions/${planningSession.session_id}/diagnose`, {
+        method:"POST",
+        body:JSON.stringify({answers}),
+      });
+      setDiagnosis(result.diagnosis);
+      setPlanningSession(current => current ? {
+        ...current,
+        status:"diagnosed",
+        diagnosis:result.diagnosis,
+        agent_trace:result.agent_trace,
+      } : current);
+      notify(`能力诊断已完成（${Math.round(result.diagnosis.overall*100)}%），尚未生成工作流`);
+    } catch (error) { notify(error instanceof Error ? error.message : "能力诊断失败"); }
+    finally { setDiagnosingAssessment(false); }
+  };
+
+  const startPlanningFromDiagnosis = async () => {
+    if (!planningSession || !diagnosis) return;
+    setPlanningWorkflow(true);
+    try {
+      const result = await apiFetch<{
+        diagnosis:AbilityDiagnosis;
         workflow:WorkflowPlan;
         agent_trace:PlanningAgentTrace[];
-      }>(`/planning-sessions/${planningSession.session_id}/complete`, {
+      }>(`/planning-sessions/${planningSession.session_id}/plan`, {
         method:"POST",
-        body:JSON.stringify({answers,capability_space:defaultCapabilitySpace}),
+        body:JSON.stringify({capability_space:defaultCapabilitySpace}),
       });
       const visual = layoutPlan(result.workflow);
       setPlan(result.workflow); setNodes(visual.nodes); setEdges(visual.edges);
-      setSelectedId(visual.nodes[0]?.id || ""); setPlanningSession(null);
-      notify(`能力诊断 ${Math.round(result.diagnosis.overall*100)}%，已据此生成 ${visual.nodes.length} 个协同节点`);
-    } catch (error) { notify(error instanceof Error ? error.message : "能力诊断或任务规划失败"); }
-    finally { setSubmittingAssessment(false); }
+      setSelectedId(visual.nodes[0]?.id || "");
+      setPlanningSession(null); setDiagnosis(null);
+      notify(`已根据诊断结果生成 ${visual.nodes.length} 个协同节点`);
+    } catch (error) { notify(error instanceof Error ? error.message : "任务规划失败"); }
+    finally { setPlanningWorkflow(false); }
   };
 
   const cancelAssessment = async () => {
-    if (!planningSession || submittingAssessment) return;
+    if (!planningSession || diagnosingAssessment || planningWorkflow) return;
+    if (diagnosis) {
+      setPlanningSession(null);
+      setDiagnosis(null);
+      notify("诊断结果已保存，可从总览任务中继续规划");
+      return;
+    }
     const sessionId = planningSession.session_id;
     setPlanningSession(null);
     try {
@@ -277,8 +320,11 @@ export function StudioView({
   </div>{planningSession && <AbilityTestDialog
     questions={planningSession.questions}
     trace={planningSession.agent_trace}
-    submitting={submittingAssessment}
+    diagnosis={diagnosis}
+    diagnosing={diagnosingAssessment}
+    planning={planningWorkflow}
     onCancel={() => void cancelAssessment()}
-    onSubmit={answers => void completeAssessment(answers)}
+    onSubmitAnswers={answers => void submitAssessment(answers)}
+    onStartPlanning={() => void startPlanningFromDiagnosis()}
   />}</>;
 }

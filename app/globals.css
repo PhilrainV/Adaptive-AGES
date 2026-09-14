@@ -110,10 +110,34 @@ button,input,textarea { font:inherit; } button { cursor:pointer; } ::selection {
 .assessment-question-one { min-height:350px; padding:24px; } .assessment-question-one h4 { max-width:760px; margin:0 0 18px; font-size:16px; line-height:1.65; }
 .assessment-options-one { display:grid; gap:9px; } .assessment-options-one button { width:100%; display:flex; align-items:center; gap:11px; padding:12px 14px; border:1px solid #dfe6e1; border-radius:10px; background:#fff; color:#4e5d54; text-align:left; cursor:pointer; font-size:12px; line-height:1.5; } .assessment-options-one button:hover { border-color:#b8ce8d; background:#fafdf7; } .assessment-options-one button.selected { border-color:#90b949; background:#f1f8e5; color:#345317; box-shadow:0 0 0 2px rgb(144 185 73 / 10%); } .assessment-options-one button>span { width:27px; height:27px; flex:0 0 auto; display:grid; place-items:center; border-radius:8px; background:#f0f3f1; font-size:10px; font-weight:800; } .assessment-options-one button.selected>span { background:#dff0bd; color:#42671f; }
 .assessment-dialog-footer { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:15px 24px; border-top:1px solid #e7ece8; background:#fafbfa; } .assessment-dialog-footer>span { color:#7d8982; font-size:10px; } .assessment-dialog-footer>div { display:flex; gap:8px; }
+
+.diagnosis-stage { padding:22px 24px 24px; display:grid; gap:14px; background:#fcfdfc; }
+.diagnosis-summary-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.diagnosis-summary-card { padding:16px; border:1px solid #dfe8df; border-radius:12px; background:#fff; }
+.diagnosis-summary-card>span { display:block; color:#728078; font-size:10px; font-weight:700; }
+.diagnosis-summary-card>strong { display:block; margin:5px 0 1px; color:#274c31; font-size:28px; letter-spacing:-.04em; }
+.diagnosis-summary-card>small { color:#87938b; font-size:9px; }
+.diagnosis-panel { padding:17px; border:1px solid #dfe7e1; border-radius:13px; background:#fff; }
+.diagnosis-panel-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:15px; }
+.diagnosis-panel-heading strong,.diagnosis-panel-heading span { display:block; }
+.diagnosis-panel-heading strong { font-size:13px; }
+.diagnosis-panel-heading>div>span { margin-top:2px; color:#7c8981; font-size:9px; }
+.diagnosis-stage-pill { padding:4px 8px; border-radius:999px; background:#eaf6d7; color:#4d7622; font-size:9px; font-weight:750; }
+.diagnosis-bars { display:grid; grid-template-columns:1fr 1fr; column-gap:18px; row-gap:12px; }
+.diagnosis-bar-row>div:first-child { display:flex; justify-content:space-between; margin-bottom:5px; color:#59685f; font-size:10px; }
+.diagnosis-bar-row strong { color:#416921; }
+.diagnosis-weaknesses { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:16px; padding-top:13px; border-top:1px solid #edf1ee; color:#7a867f; font-size:9px; }
+.diagnosis-weaknesses strong { padding:4px 7px; border-radius:6px; background:#fff2d9; color:#8b5d1b; }
+.diagnosis-boundary-note { display:flex; align-items:flex-start; gap:10px; padding:13px 14px; border:1px solid #cfe1af; border-radius:11px; background:#f2f9e8; color:#4b6b2c; }
+.diagnosis-boundary-note svg { flex:0 0 auto; margin-top:1px; }
+.diagnosis-boundary-note strong,.diagnosis-boundary-note span { display:block; }
+.diagnosis-boundary-note strong { font-size:11px; }
+.diagnosis-boundary-note span { margin-top:3px; font-size:9px; line-height:1.55; }
+
 @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } } @keyframes spin { to { transform:rotate(360deg); } } .spin { animation:spin .8s linear infinite; }
 @media(max-width:1120px){.studio-shell{grid-template-columns:190px minmax(420px,1fr)}.config-panel{display:none}.metric-grid{grid-template-columns:repeat(2,1fr)}.capability-grid,.profile-grid,.settings-grid{grid-template-columns:1fr}.question-list{grid-template-columns:1fr}}
 @media(max-width:780px){.app-shell{grid-template-columns:1fr;padding-bottom:67px}.sidebar{inset:auto 0 0 0;width:auto;height:67px;padding:7px 10px;flex-direction:row;border:0;border-top:1px solid #294437}.brand,.nav-label,.sidebar-bottom,.system-card{display:none}.nav-stack{width:100%;display:grid;grid-template-columns:repeat(4,1fr)}.nav-item{flex-direction:column;justify-content:center;gap:3px;padding:0 4px;font-size:10px;min-height:52px}.nav-item:hover{transform:none}.nav-badge{display:none}.main-area{grid-column:1}.topbar{height:62px;padding:0 15px}.page-title{min-width:0}.page-title p,.search-box{display:none}.content{padding:18px 14px 25px}.section-heading{align-items:flex-start}.section-heading h2{font-size:22px}.metric-grid{grid-template-columns:1fr 1fr;gap:9px}.metric-card{min-height:112px;padding:13px}.dashboard-grid{grid-template-columns:1fr}.studio-shell{height:calc(100vh - 166px);min-height:580px;grid-template-columns:1fr}.component-panel{display:none}.task-composer{padding:9px}.composer-box{align-items:stretch;flex-direction:column}.composer-box .primary-button{width:100%}.capability-grid{grid-template-columns:1fr}}
-@media(max-width:780px){.assessment-overlay{padding:8px}.assessment-dialog{max-height:calc(100vh - 16px)}.planning-agent-strip{grid-template-columns:1fr 1fr;padding:10px}.assessment-dialog-header,.assessment-question-one,.assessment-dialog-footer{padding:16px}.assessment-question-one{min-height:390px}.assessment-dialog-footer{align-items:stretch;flex-direction:column}.assessment-dialog-footer>div{display:grid;grid-template-columns:1fr 1fr}.assessment-dialog-footer .primary-button,.assessment-dialog-footer .ghost-button{width:100%}}
+@media(max-width:780px){.assessment-overlay{padding:8px}.assessment-dialog{max-height:calc(100vh - 16px)}.planning-agent-strip{grid-template-columns:1fr 1fr;padding:10px}.assessment-dialog-header,.assessment-question-one,.assessment-dialog-footer,.diagnosis-stage{padding:16px}.assessment-question-one{min-height:390px}.assessment-dialog-footer{align-items:stretch;flex-direction:column}.assessment-dialog-footer>div{display:grid;grid-template-columns:1fr 1fr}.assessment-dialog-footer .primary-button,.assessment-dialog-footer .ghost-button{width:100%}.diagnosis-bars,.diagnosis-summary-grid{grid-template-columns:1fr}}
 
 
 .provider-warning {
