@@ -1,25 +1,67 @@
 "use client";
 
-import { ArrowRight, Bot, CheckCircle2, GitBranch, Play, Sparkles, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowRight, Bot, CheckCircle2, GitBranch, LoaderCircle, Play, Sparkles, Users } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
-const metrics = [
-  { label: "可用智能主体", value: "18", delta: "+3 本月", icon: Bot, bg: "#edf2ff", color: "#5d7cff" },
-  { label: "自适应工作流", value: "12", delta: "+21%", icon: GitBranch, bg: "#f3fae7", color: "#719c29" },
-  { label: "本月执行", value: "1,284", delta: "+16.8%", icon: Play, bg: "#fff3e5", color: "#d7872d" },
-  { label: "协同成功率", value: "94.2%", delta: "+2.4%", icon: CheckCircle2, bg: "#f2ecff", color: "#8b62db" },
-];
+interface DashboardData {
+  display_name: string;
+  metrics: {
+    agents: number;
+    workflows: number;
+    month_executions: number;
+    success_rate: number;
+    running: number;
+    waiting_human: number;
+    failed: number;
+  };
+  recent_tasks: Array<{
+    id: string;
+    title: string;
+    agents: string[];
+    status: string;
+    match_score: number;
+    updated_at: string;
+  }>;
+  activities: Array<{ id:string; title:string; status:string; created_at:string }>;
+}
+
+const statusLabel: Record<string,string> = {
+  ready:"就绪", draft:"草稿", queued:"排队中", running:"运行中", completed:"已完成",
+  failed:"失败", waiting_for_human:"待人工处理", resumable:"可继续",
+};
+const agentLabel: Record<string,string> = {llm:"LLM",ml:"ML",human:"人",tool:"工具"};
+const agentColor: Record<string,string> = {llm:"#5d7cff",ml:"#f3a950",human:"#9a76e8",tool:"#7e9a88"};
+const statusClass = (status:string) => status === "running" || status === "queued" ? "live" : status === "waiting_for_human" || status === "failed" ? "review" : "draft";
+const formatTime = (value:string) => new Intl.DateTimeFormat("zh-CN",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}).format(new Date(value));
 
 export function DashboardView({ onNavigate }: { onNavigate: () => void }) {
+  const [data,setData] = useState<DashboardData | null>(null);
+  const [error,setError] = useState("");
+  useEffect(() => {
+    void apiFetch<DashboardData>("/dashboard").then(setData).catch(reason => setError(reason instanceof Error ? reason.message : "总览加载失败"));
+  }, []);
+
+  if (!data) return <div className="panel config-placeholder">{error || <><LoaderCircle className="spin" size={17}/>正在读取真实工作区数据…</>}</div>;
+  const metrics = [
+    { label:"已注册智能主体", value:String(data.metrics.agents), delta:"当前用户", icon:Bot, bg:"#edf2ff", color:"#5d7cff" },
+    { label:"自适应工作流", value:String(data.metrics.workflows), delta:`${data.metrics.running} 个运行中`, icon:GitBranch, bg:"#f3fae7", color:"#719c29" },
+    { label:"本月执行", value:String(data.metrics.month_executions), delta:`${data.metrics.waiting_human} 个待人工`, icon:Play, bg:"#fff3e5", color:"#d7872d" },
+    { label:"实际执行成功率", value:`${(data.metrics.success_rate*100).toFixed(1)}%`, delta:`${data.metrics.failed} 个失败`, icon:CheckCircle2, bg:"#f2ecff", color:"#8b62db" },
+  ];
+
   return <>
-    <div className="section-heading"><div><p className="eyebrow">Overview</p><h2>下午好，魏老师</h2><p>3 个工作流正在运行，1 个节点等待教师确认。</p></div><button className="primary-button" onClick={onNavigate}><Sparkles size={15}/>创建自适应工作流</button></div>
-    <div className="metric-grid">{metrics.map(({ label, value, delta, icon: Icon, bg, color }) => <div className="metric-card" key={label}><div className="metric-top"><span className="metric-icon" style={{background:bg,color}}><Icon size={17}/></span><span className="metric-delta">{delta}</span></div><div className="metric-value">{value}</div><div className="metric-label">{label}</div></div>)}</div>
+    <div className="section-heading"><div><p className="eyebrow">Overview</p><h2>你好，{data.display_name}</h2><p>{data.metrics.running} 个工作流正在运行，{data.metrics.waiting_human} 个执行等待人工处理。</p></div><button className="primary-button" onClick={onNavigate}><Sparkles size={15}/>创建自适应工作流</button></div>
+    <div className="metric-grid">{metrics.map(({label,value,delta,icon:Icon,bg,color}) => <div className="metric-card" key={label}><div className="metric-top"><span className="metric-icon" style={{background:bg,color}}><Icon size={17}/></span><span className="metric-delta">{delta}</span></div><div className="metric-value">{value}</div><div className="metric-label">{label}</div></div>)}</div>
     <div className="dashboard-grid">
-      <section className="panel"><div className="panel-header"><div><h3>最近任务</h3><p>异构主体协同执行情况</p></div><button className="ghost-button" onClick={onNavigate}>查看全部 <ArrowRight size={13}/></button></div><div className="table-wrap"><table className="data-table"><thead><tr><th>任务</th><th>主体组合</th><th>状态</th><th>匹配分</th></tr></thead><tbody>
-        <tr><td><div className="task-name">学生学业风险分析</div><div className="task-sub">8 分钟前更新</div></td><td><div className="agent-stack"><span className="agent-dot" style={{background:"#f3a950"}}>ML</span><span className="agent-dot" style={{background:"#5d7cff"}}>AI</span><span className="agent-dot" style={{background:"#9a76e8"}}>人</span></div></td><td><span className="status-pill live">运行中</span></td><td>92%</td></tr>
-        <tr><td><div className="task-name">开放题自动评分与复核</div><div className="task-sub">昨天 16:20</div></td><td><div className="agent-stack"><span className="agent-dot" style={{background:"#5d7cff"}}>AI</span><span className="agent-dot" style={{background:"#9a76e8"}}>人</span></div></td><td><span className="status-pill review">待复核</span></td><td>89%</td></tr>
-        <tr><td><div className="task-name">课程知识图谱更新</div><div className="task-sub">9 月 12 日</div></td><td><div className="agent-stack"><span className="agent-dot" style={{background:"#5d7cff"}}>AI</span><span className="agent-dot" style={{background:"#7e9a88"}}>工具</span></div></td><td><span className="status-pill draft">已完成</span></td><td>95%</td></tr>
+      <section className="panel"><div className="panel-header"><div><h3>最近任务</h3><p>来自 PostgreSQL 的真实工作流与执行记录</p></div><button className="ghost-button" onClick={onNavigate}>进入 Studio <ArrowRight size={13}/></button></div><div className="table-wrap"><table className="data-table"><thead><tr><th>任务</th><th>主体组合</th><th>状态</th><th>匹配分</th></tr></thead><tbody>
+        {data.recent_tasks.map(item => <tr key={item.id}><td><div className="task-name">{item.title}</div><div className="task-sub">{formatTime(item.updated_at)} 更新</div></td><td><div className="agent-stack">{item.agents.map(kind => <span className="agent-dot" key={kind} style={{background:agentColor[kind] || "#7e9a88"}}>{agentLabel[kind] || kind}</span>)}</div></td><td><span className={`status-pill ${statusClass(item.status)}`}>{statusLabel[item.status] || item.status}</span></td><td>{Math.round(item.match_score*100)}%</td></tr>)}
+        {!data.recent_tasks.length && <tr><td colSpan={4}><div className="config-placeholder">还没有真实工作流。点击“创建自适应工作流”开始规划。</div></td></tr>}
       </tbody></table></div></section>
-      <section className="panel"><div className="panel-header"><div><h3>实时动态</h3><p>来自规划器与执行引擎</p></div><Users size={16} color="#718078"/></div><div className="activity-list"><div className="activity-item"><span className="activity-marker accent"/><div><div className="activity-title">教师完成教学建议复核</div><div className="activity-meta">纠正内容已用于更新能力画像</div></div><span className="activity-time">2m</span></div><div className="activity-item"><span className="activity-marker accent"/><div><div className="activity-title">规划器切换至 XGBoost</div><div className="activity-meta">小样本预测匹配度提高 7%</div></div><span className="activity-time">8m</span></div><div className="activity-item"><span className="activity-marker"/><div><div className="activity-title">GPT-4.1 Agent 能力校准</div><div className="activity-meta">解释维度 0.91 → 0.94</div></div><span className="activity-time">1h</span></div></div></section>
+      <section className="panel"><div className="panel-header"><div><h3>执行动态</h3><p>最近的真实执行事件</p></div><Users size={16} color="#718078"/></div><div className="activity-list">
+        {data.activities.map(item => <div className="activity-item" key={item.id}><span className={`activity-marker ${item.status === "completed" ? "accent" : ""}`}/><div><div className="activity-title">{item.title}</div><div className="activity-meta">{statusLabel[item.status] || item.status}</div></div><span className="activity-time">{formatTime(item.created_at)}</span></div>)}
+        {!data.activities.length && <div className="config-placeholder">暂无执行记录。运行工作流后这里会自动更新。</div>}
+      </div></section>
     </div>
   </>;
 }

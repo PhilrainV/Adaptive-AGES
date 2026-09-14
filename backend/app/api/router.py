@@ -1,3 +1,6 @@
+from copy import deepcopy
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Response, status
 from langchain_openai import ChatOpenAI
 from sqlalchemy import select
@@ -28,6 +31,7 @@ from app.schemas.domain import (
     HumanAssessmentSubmitRequest,
     LoginRequest,
     ModelSettingsUpdate,
+    NodeModelSettingsUpdate,
     PlanRequest,
     TaskUnderstandRequest,
     UserCreate,
@@ -47,6 +51,40 @@ planner = AdaptivePlanner()
 assessment = HumanCapabilityAssessmentService()
 
 
+PROVIDER_BASE_URLS = {
+    "deepseek": "https://api.deepseek.com/v1",
+    "bailian-cn": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "bailian-intl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+}
+
+
+def normalized_base_url(provider: str, base_url: str | None) -> str | None:
+    value = (base_url or PROVIDER_BASE_URLS.get(provider) or "").strip().rstrip("/")
+    if not value:
+        if provider in {"newapi", "local"}:
+            raise HTTPException(status_code=400, detail="该接口类型必须填写实际 Base URL（通常以 /v1 结尾）")
+        return None
+    if "docs.newapi.pro" in value.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="docs.newapi.pro 是 NewAPI 文档站，不是 API 网关。请填写服务商或自部署 NewAPI 的实际地址，例如 https://你的域名/v1",
+        )
+    if not value.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Base URL 必须以 http:// 或 https:// 开头")
+    return value
+
+
+def public_workflow_definition(definition: dict) -> dict:
+    result = deepcopy(definition)
+    for node in result.get("nodes", []):
+        config = node.get("config") or {}
+        configured = bool(config.pop("api_key_encrypted", None))
+        if configured:
+            config["api_key_configured"] = True
+        node["config"] = config
+    return result
+
+
 async def model_config_for(db: DbSession, user_id: str) -> dict:
     record = await db.scalar(select(ModelSetting).where(ModelSetting.user_id == user_id))
     if not record:
@@ -58,6 +96,69 @@ async def model_config_for(db: DbSession, user_id: str) -> dict:
     return {
         "provider": record.provider, "model": record.model, "base_url": record.base_url,
         "api_key": api_key, "temperature": record.temperature,
+    }
+
+
+@router.get("/dashboard")
+async def get_dashboard(user_id: CurrentUserId, db: DbSession):
+    user = await db.scalar(select(User).where(User.id == user_id))
+    agents = list((await db.scalars(select(Agent).where(Agent.owner_id == user_id))).all())
+    workflows = list((await db.scalars(
+        select(Workflow).where(Workflow.owner_id == user_id).order_by(Workflow.updated_at.desc())
+    )).all())
+    tasks = list((await db.scalars(select(Task).where(Task.owner_id == user_id))).all())
+    executions = list((await db.scalars(
+        select(WorkflowExecution).join(Workflow).where(Workflow.owner_id == user_id)
+        .order_by(WorkflowExecution.created_at.desc())
+    )).all())
+    task_map = {item.id: item for item in tasks}
+    workflow_map = {item.id: item for item in workflows}
+    latest_execution = {}
+    for item in executions:
+        latest_execution.setdefault(item.workflow_id, item)
+    terminal = [item for item in executions if item.status in {"completed", "failed"}]
+    completed = sum(item.status == "completed" for item in terminal)
+    now = datetime.now(timezone.utc)
+    month_executions = sum(
+        item.created_at and item.created_at.year == now.year and item.created_at.month == now.month
+        for item in executions
+    )
+    recent_tasks = []
+    for workflow in workflows[:8]:
+        execution = latest_execution.get(workflow.id)
+        nodes = workflow.definition.get("nodes", [])
+        types = list(dict.fromkeys(node.get("subject_type", "tool") for node in nodes))
+        scores = [float(node.get("match_score", 0)) for node in nodes if node.get("match_score") is not None]
+        recent_tasks.append({
+            "id": workflow.id,
+            "title": task_map.get(workflow.task_id).title if task_map.get(workflow.task_id) else workflow.name,
+            "agents": types,
+            "status": execution.status if execution else workflow.status,
+            "match_score": sum(scores) / len(scores) if scores else 0,
+            "updated_at": (execution.created_at if execution else workflow.updated_at).isoformat(),
+        })
+    activities = []
+    for execution in executions[:8]:
+        workflow = workflow_map.get(execution.workflow_id)
+        activities.append({
+            "id": execution.id,
+            "title": workflow.name if workflow else "工作流执行",
+            "status": execution.status,
+            "created_at": execution.created_at.isoformat(),
+        })
+    return {
+        "display_name": user.display_name if user else "用户",
+        "metrics": {
+            "agents": len(agents),
+            "workflows": len(workflows),
+            "month_executions": month_executions,
+            "success_rate": completed / len(terminal) if terminal else 0,
+            "running": sum(item.status in {"queued", "running"} for item in executions),
+            "waiting_human": sum(item.status == "waiting_for_human" for item in executions),
+            "failed": sum(item.status == "failed" for item in executions),
+        },
+        "recent_tasks": recent_tasks,
+        "activities": activities,
     }
 
 
@@ -148,7 +249,17 @@ async def update_workflow(workflow_id: str, payload: WorkflowUpdate, user_id: Cu
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
     definition = dict(workflow.definition)
-    definition["nodes"] = [node.model_dump(mode="json") for node in payload.nodes]
+    previous_nodes = {item.get("id"): item for item in definition.get("nodes", [])}
+    next_nodes = []
+    for node in payload.nodes:
+        item = node.model_dump(mode="json")
+        old_config = (previous_nodes.get(item["id"], {}).get("config") or {})
+        if old_config.get("api_key_encrypted") and not item["config"].get("use_default_model", True):
+            item["config"]["api_key_encrypted"] = old_config["api_key_encrypted"]
+            item["config"]["api_key_configured"] = True
+        item["config"].pop("api_key", None)
+        next_nodes.append(item)
+    definition["nodes"] = next_nodes
     definition["edges"] = [edge.model_dump(mode="json") for edge in payload.edges]
     definition["requires_human"] = any(node.subject_type.value == "human" for node in payload.nodes)
     workflow.definition = definition
@@ -156,7 +267,7 @@ async def update_workflow(workflow_id: str, payload: WorkflowUpdate, user_id: Cu
     if payload.name:
         workflow.name = payload.name
     await db.commit()
-    return WorkflowPlan.model_validate(definition)
+    return WorkflowPlan.model_validate(public_workflow_definition(definition))
 
 
 @router.post("/workflows/{workflow_id}/execute")
@@ -229,13 +340,58 @@ async def save_model_settings(payload: ModelSettingsUpdate, user_id: CurrentUser
         record = ModelSetting(user_id=user_id)
         db.add(record)
     record.provider = payload.provider
-    record.model = payload.model
-    record.base_url = payload.base_url or None
+    record.model = payload.model.strip()
+    record.base_url = normalized_base_url(payload.provider, payload.base_url)
     record.temperature = payload.temperature
     if payload.api_key:
         record.api_key_encrypted = encrypt_secret(payload.api_key)
     await db.commit()
     return {"saved": True, "api_key_configured": bool(record.api_key_encrypted)}
+
+
+@router.put("/workflows/{workflow_id}/nodes/{node_id}/model-settings")
+async def save_node_model_settings(
+    workflow_id: str,
+    node_id: str,
+    payload: NodeModelSettingsUpdate,
+    user_id: CurrentUserId,
+    db: DbSession,
+):
+    workflow = await db.scalar(select(Workflow).where(Workflow.id == workflow_id, Workflow.owner_id == user_id))
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    definition = deepcopy(workflow.definition)
+    node = next((item for item in definition.get("nodes", []) if item.get("id") == node_id), None)
+    if not node:
+        raise HTTPException(status_code=404, detail="Workflow node not found")
+    if node.get("subject_type") != "llm":
+        raise HTTPException(status_code=400, detail="只有 LLM 节点可以配置独立模型")
+    config = dict(node.get("config") or {})
+    config["use_default_model"] = payload.use_default
+    config["modality"] = payload.modality
+    config["temperature"] = payload.temperature
+    if payload.use_default:
+        for key in ("provider", "model", "base_url", "api_key_encrypted", "api_key_configured"):
+            config.pop(key, None)
+    else:
+        config["provider"] = payload.provider
+        config["model"] = payload.model.strip()
+        config["base_url"] = normalized_base_url(payload.provider, payload.base_url)
+        if payload.api_key:
+            config["api_key_encrypted"] = encrypt_secret(payload.api_key)
+        if not config.get("api_key_encrypted"):
+            raise HTTPException(status_code=400, detail="独立模型需要填写并保存 API Key")
+        config["api_key_configured"] = True
+    config.pop("api_key", None)
+    node["config"] = config
+    workflow.definition = definition
+    workflow.version += 1
+    await db.commit()
+    return {
+        "saved": True,
+        "use_default": payload.use_default,
+        "api_key_configured": bool(config.get("api_key_encrypted")),
+    }
 
 
 @router.post("/settings/model/test")

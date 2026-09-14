@@ -145,6 +145,11 @@ class ModelSettingsUpdate(BaseModel):
     temperature: float = Field(default=.2, ge=0, le=2)
 
 
+class NodeModelSettingsUpdate(ModelSettingsUpdate):
+    use_default: bool = True
+    modality: str = "text"
+
+
 class HumanAssessmentGenerateRequest(BaseModel):
     design_requirement: str = Field(min_length=8)
 
