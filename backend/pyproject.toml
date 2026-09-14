@@ -1,0 +1,35 @@
+[project]
+name = "adaptive-ages-api"
+version = "0.1.0"
+description = "Adaptive-AGES heterogeneous agent orchestration API"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "pydantic-settings>=2.7",
+  "pyjwt[crypto]>=2.10",
+  "pwdlib[argon2]>=0.2",
+  "celery[redis]>=5.4",
+  "redis>=5.2",
+  "langgraph>=0.4",
+  "langchain-openai>=0.3",
+  "numpy>=2.2",
+  "httpx>=0.28",
+  "python-multipart>=0.0.20",
+  "email-validator>=2.2"
+]
+
+[project.optional-dependencies]
+ml = ["scikit-learn>=1.6", "torch>=2.5", "transformers>=4.48", "joblib>=1.4"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.25", "ruff>=0.9"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
