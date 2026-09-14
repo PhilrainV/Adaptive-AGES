@@ -154,8 +154,11 @@ class PlanningStartRequest(TaskUnderstandRequest):
     pass
 
 
-class PlanningCompleteRequest(BaseModel):
+class PlanningDiagnoseRequest(BaseModel):
     answers: dict[str, int]
+
+
+class PlanningCreateWorkflowRequest(BaseModel):
     capability_space: list[CapabilitySubject]
     weights: dict[str, float] = Field(
         default_factory=lambda: {"fit": .65, "reliability": .2, "cost": .1, "latency": .05}

@@ -36,7 +36,8 @@ from app.schemas.domain import (
     LoginRequest,
     ModelSettingsUpdate,
     NodeModelSettingsUpdate,
-    PlanningCompleteRequest,
+    PlanningCreateWorkflowRequest,
+    PlanningDiagnoseRequest,
     PlanningStartRequest,
     PlanRequest,
     TaskGraph,
@@ -305,14 +306,14 @@ async def start_planning_session(
     }
 
 
-@router.post("/planning-sessions/{session_id}/complete")
-async def complete_planning_session(
+@router.post("/planning-sessions/{session_id}/diagnose")
+async def diagnose_planning_session(
     session_id: str,
-    payload: PlanningCompleteRequest,
+    payload: PlanningDiagnoseRequest,
     user_id: CurrentUserId,
     db: DbSession,
 ):
-    """Run agents 3 and 4 with fresh test evidence and persist the resulting workflow."""
+    """Run only the ability-diagnosis stage and persist its evidence."""
     record = await db.scalar(
         select(HumanAssessment).where(
             HumanAssessment.id == session_id,
@@ -321,11 +322,13 @@ async def complete_planning_session(
     )
     if not record:
         raise HTTPException(status_code=404, detail="Planning session not found")
+    if record.status == "diagnosed":
+        raise HTTPException(status_code=409, detail="能力诊断已完成，请确认后开始规划")
     if record.status == "completed":
-        raise HTTPException(status_code=409, detail="该测试已经提交并完成规划")
+        raise HTTPException(status_code=409, detail="该测试已经完成规划")
     expected_question_ids = {item["id"] for item in record.questions}
     if set(payload.answers) != expected_question_ids:
-        raise HTTPException(status_code=400, detail="请完成全部测试题后再生成规划")
+        raise HTTPException(status_code=400, detail="请完成全部测试题后再提交诊断")
 
     session_state = dict(record.result or {})
     task_id = session_state.get("task_id")
@@ -334,32 +337,13 @@ async def complete_planning_session(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    graph = TaskGraph.model_validate(session_state.get("task_graph"))
 
     diagnosis = ability_diagnosis_agent.run(record.questions, payload.answers)
-    plan = capability_planning_agent.run(
-        graph,
-        payload.capability_space,
-        diagnosis,
-        payload.weights,
-    )
-    workflow = Workflow(
-        owner_id=user_id,
-        task_id=task.id,
-        name=f"{task.title} · 自适应工作流",
-        definition=plan.model_dump(mode="json"),
-        decision_trace={"items": plan.decision_trace},
-        status="ready",
-    )
-    db.add(workflow)
-    await db.flush()
-    plan.id = workflow.id
-    workflow.definition = plan.model_dump(mode="json")
-    task.status = "planned"
-
     record.answers = payload.answers
-    record.result = {**session_state, "diagnosis": diagnosis, "workflow_id": workflow.id}
-    record.status = "completed"
+    record.result = {**session_state, "diagnosis": diagnosis}
+    record.status = "diagnosed"
+    task.status = "diagnosed"
+
     profile = await db.scalar(select(HumanProfile).where(HumanProfile.user_id == user_id))
     if not profile:
         profile = HumanProfile(user_id=user_id)
@@ -380,6 +364,81 @@ async def complete_planning_session(
     user = await db.scalar(select(User).where(User.id == user_id))
     if user:
         user.adaptive_profile = profile.capability_vector
+    await db.commit()
+    return {
+        "task_id": task.id,
+        "diagnosis": diagnosis,
+        "agent_trace": [
+            {"agent": problem_analysis_agent.name, "status": "completed"},
+            {"agent": test_generation_agent.name, "status": "completed"},
+            {
+                "agent": ability_diagnosis_agent.name,
+                "status": "completed",
+                "summary": f"综合能力 {diagnosis['overall']:.0%}",
+            },
+            {
+                "agent": capability_planning_agent.name,
+                "status": "waiting_for_confirmation",
+                "summary": "等待用户确认后开始规划",
+            },
+        ],
+    }
+
+
+@router.post("/planning-sessions/{session_id}/plan")
+async def create_workflow_from_diagnosis(
+    session_id: str,
+    payload: PlanningCreateWorkflowRequest,
+    user_id: CurrentUserId,
+    db: DbSession,
+):
+    """Create a workflow only after the user confirms a persisted diagnosis."""
+    record = await db.scalar(
+        select(HumanAssessment).where(
+            HumanAssessment.id == session_id,
+            HumanAssessment.user_id == user_id,
+        )
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Planning session not found")
+    if record.status == "completed":
+        raise HTTPException(status_code=409, detail="该诊断已经生成工作流")
+    if record.status != "diagnosed":
+        raise HTTPException(status_code=409, detail="请先完成能力诊断，再开始规划")
+
+    session_state = dict(record.result or {})
+    diagnosis = session_state.get("diagnosis")
+    if not diagnosis:
+        raise HTTPException(status_code=409, detail="诊断结果不存在，请重新完成能力测试")
+    task_id = session_state.get("task_id")
+    task = await db.scalar(
+        select(Task).where(Task.id == task_id, Task.owner_id == user_id)
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    graph = TaskGraph.model_validate(session_state.get("task_graph"))
+
+    plan = capability_planning_agent.run(
+        graph,
+        payload.capability_space,
+        diagnosis,
+        payload.weights,
+    )
+    workflow = Workflow(
+        owner_id=user_id,
+        task_id=task.id,
+        name=f"{task.title} · 自适应工作流",
+        definition=plan.model_dump(mode="json"),
+        decision_trace={"items": plan.decision_trace},
+        status="ready",
+    )
+    db.add(workflow)
+    await db.flush()
+    plan.id = workflow.id
+    workflow.definition = plan.model_dump(mode="json")
+    task.status = "planned"
+    record.result = {**session_state, "workflow_id": workflow.id}
+    record.status = "completed"
     await db.commit()
     return {
         "task_graph": graph,
@@ -450,7 +509,7 @@ async def get_task(task_id: str, user_id: CurrentUserId, db: DbSession):
                     select(HumanAssessment)
                     .where(
                         HumanAssessment.user_id == user_id,
-                        HumanAssessment.status == "awaiting_answers",
+                        HumanAssessment.status.in_(["awaiting_answers", "diagnosed"]),
                     )
                     .order_by(HumanAssessment.updated_at.desc())
                 )
@@ -465,10 +524,14 @@ async def get_task(task_id: str, user_id: CurrentUserId, db: DbSession):
             None,
         )
         if assessment_record:
+            diagnosis = (assessment_record.result or {}).get("diagnosis")
+            diagnosed = assessment_record.status == "diagnosed"
             pending_session = {
                 "session_id": assessment_record.id,
                 "task_id": task.id,
+                "status": assessment_record.status,
                 "questions": assessment.public_questions(assessment_record.questions),
+                "diagnosis": diagnosis,
                 "agent_trace": [
                     {
                         "agent": problem_analysis_agent.name,
@@ -481,8 +544,16 @@ async def get_task(task_id: str, user_id: CurrentUserId, db: DbSession):
                         "summary": f"已生成 {len(assessment_record.questions)} 道任务自适应测试题",
                         "mode": (assessment_record.result or {}).get("test_generation_mode"),
                     },
-                    {"agent": ability_diagnosis_agent.name, "status": "waiting_for_answers"},
-                    {"agent": capability_planning_agent.name, "status": "waiting_for_diagnosis"},
+                    {
+                        "agent": ability_diagnosis_agent.name,
+                        "status": "completed" if diagnosed else "waiting_for_answers",
+                        "summary": f"综合能力 {diagnosis['overall']:.0%}" if diagnosis else None,
+                    },
+                    {
+                        "agent": capability_planning_agent.name,
+                        "status": "waiting_for_confirmation" if diagnosed else "waiting_for_diagnosis",
+                        "summary": "等待用户确认后开始规划" if diagnosed else None,
+                    },
                 ],
             }
     return {

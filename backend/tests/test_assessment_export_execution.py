@@ -10,6 +10,8 @@ from app.agents.test_generation_agent import TestGenerationAgent as AssessmentTe
 from app.executors.registry import ExecutorRegistry
 from app.schemas.domain import (
     CapabilitySubject,
+    PlanningCreateWorkflowRequest,
+    PlanningDiagnoseRequest,
     SubjectType,
     WorkflowEdge,
     WorkflowNode,
@@ -40,6 +42,16 @@ def test_task_adaptive_assessment_updates_multiple_dimensions():
     assert set(result["capability"]) == set(service.dimensions)
     assert "教育数据预测" in questions[0]["prompt"]
 
+
+
+
+def test_diagnosis_and_planning_requests_are_separate_stages():
+    diagnosis_request = PlanningDiagnoseRequest(answers={"question-1": 2})
+    planning_request = PlanningCreateWorkflowRequest(capability_space=[])
+
+    assert diagnosis_request.model_dump() == {"answers": {"question-1": 2}}
+    assert "capability_space" not in PlanningDiagnoseRequest.model_fields
+    assert "answers" not in PlanningCreateWorkflowRequest.model_fields
 
 @pytest.mark.asyncio
 async def test_four_planning_agents_form_an_assessment_first_pipeline():

@@ -10,7 +10,8 @@ Base URL: `/api/v1`. Protected routes use `Authorization: Bearer <token>`.
 | POST | `/agents` | Register an LLM, ML, human, or tool subject and its capability vector |
 | GET | `/dashboard` | Return real task, workflow, execution, and aggregate workspace data |
 | POST | `/planning-sessions/start` | Analyse a problem and generate a task-specific ability test |
-| POST | `/planning-sessions/{id}/complete` | Diagnose answers and create a capability-aware workflow |
+| POST | `/planning-sessions/{id}/diagnose` | Score all answers, persist the diagnosis, and stop before planning |
+| POST | `/planning-sessions/{id}/plan` | Create a workflow only after explicit user confirmation |
 | DELETE | `/planning-sessions/{id}` | Cancel an unfinished test and remove its provisional task |
 | POST | `/tasks/understand` | Convert a natural-language goal to a task graph |
 | GET | `/tasks/{id}` | Load a task, its graph, workflow, or pending assessment |
@@ -38,10 +39,12 @@ Base URL: `/api/v1`. Protected routes use `Authorization: Bearer <token>`.
 
 The problem-analysis agent returns a task graph and the test-generation agent returns task-specific questions. No workflow is created yet.
 
-2. After the user answers every question, `POST /planning-sessions/{id}/complete` runs the ability-diagnosis agent. It maps test evidence to both a user-facing ability vector and the shared planning capability space. The capability-planning agent then calibrates the Human subject and creates the workflow. Every trace entry records the chosen subject, normalized score, reasons, and alternatives.
+2. After the user answers every question, `POST /planning-sessions/{id}/diagnose` runs only the ability-diagnosis agent. It persists the evidence-backed diagnosis and returns it to the client. No workflow exists at this point.
 
-3. The client may edit and persist the plan with `PUT /workflows/{id}`. `POST /workflows/{id}/execute`
+3. After the user reviews the result and explicitly confirms planning, `POST /planning-sessions/{id}/plan` passes the stored task graph and diagnosis to the capability-planning agent. Only this request creates the workflow. Every trace entry records the chosen subject, normalized score, reasons, and alternatives.
+
+4. The client may edit and persist the plan with `PUT /workflows/{id}`. `POST /workflows/{id}/execute`
 compiles the saved DAG. A human node changes the execution state to `waiting_for_human`.
 
-4. `GET /workflows/{id}/export` produces a ZIP with an executable Python runner, graph definition,
+5. `GET /workflows/{id}/export` produces a ZIP with an executable Python runner, graph definition,
 input example, environment template and separate ML-node modules. Secrets are never exported.
