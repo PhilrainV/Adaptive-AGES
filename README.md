@@ -1,6 +1,6 @@
 # Adaptive-AGES
 
-Adaptive Generalized Execution System is an extensible platform for automatically composing LLM agents, machine-learning models, tools, and human experts around complex tasks. Unlike a conventional Agent Builder, its primary flow is **task → capability requirements → subject matching → dynamic workflow → execution feedback**.
+Adaptive Generalized Execution System is an extensible platform for automatically composing LLM agents, machine-learning models, tools, and human experts around complex tasks. Unlike a conventional Agent Builder, its primary flow is **problem analysis → task-specific ability test → human ability diagnosis → capability-aware planning → execution feedback**.
 
 The repository contains a production-oriented MVP: a responsive React/TypeScript workspace, React Flow workflow canvas, capability and user-profile views, plus a modular FastAPI backend with PostgreSQL models, Redis/Celery jobs, explainable matching, and LangGraph compilation.
 
@@ -17,7 +17,8 @@ The repository contains a production-oriented MVP: a responsive React/TypeScript
 - Add, delete, move and connect nodes; edit LLM prompts, ML Python and human-review criteria
 - Encrypted per-user OpenAI-compatible model settings and connection test
 - Real LangGraph execution plus a standalone executable ZIP export
-- Task-adaptive human capability assessment with evidence-backed profile updates
+- An assessment-first planning session implemented by four separate agents: problem analysis, test generation, ability diagnosis, and capability-aware planning
+- Dashboard task navigation, pending-assessment recovery, and owner-scoped cascading deletion
 - PostgreSQL entity model and Redis/Celery worker foundation
 
 ## Repository map
@@ -28,6 +29,7 @@ components/views/       Dashboard, Studio, Capability, and Profile surfaces
 components/workflow/    React Flow nodes and canvas
 lib/                    Shared frontend domain data
 backend/app/api/        FastAPI routes and dependencies
+backend/app/agents/     Four specialized agents in the assessment-first planning pipeline
 backend/app/models/     SQLAlchemy persistence model
 backend/app/services/   Task understanding, matching, and adaptive planning
 backend/app/executors/  Unified executor interface and registry

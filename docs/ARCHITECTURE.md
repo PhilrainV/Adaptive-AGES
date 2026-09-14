@@ -6,23 +6,26 @@ Adaptive-AGES treats an LLM, a machine-learning model, and a human as first-clas
 
 ```mermaid
 flowchart TD
-  U["Natural-language task"] --> T["Task Understanding"]
-  T --> P["Adaptive Planner"]
-  C["Capability Space"] --> P
-  X["User Profile"] --> P
-  P --> G["Dynamic Workflow"]
+  U["Natural-language task"] --> A1["1. Problem Analysis Agent"]
+  A1 --> A2["2. Test Generation Agent"]
+  A2 --> Q["User answers"]
+  Q --> A3["3. Ability Diagnosis Agent"]
+  A3 --> A4["4. Capability Planning Agent"]
+  A4 --> G["Dynamic Workflow"]
   G --> E["LangGraph Engine"]
   E --> F["Feedback & Capability Learning"]
-  F --> C
+  F --> A3
 ```
 
 ## Module boundaries
 
 | Layer | Responsibility | Extension point |
 | --- | --- | --- |
-| Task Understanding | Goal extraction, decomposition, dependency and risk analysis | Structured-output LLM adapter or domain-specific decomposer |
+| Problem Analysis Agent | Goal extraction, decomposition, dependency and risk analysis | Structured-output LLM adapter or domain-specific decomposer |
+| Test Generation Agent | Generate contextual evidence tasks from the current problem and graph | Adaptive item bank, IRT, or multimodal assessment |
+| Ability Diagnosis Agent | Score answers and map evidence to shared planning capabilities | Bayesian estimation, confidence calibration, or longitudinal evidence |
+| Capability Planning Agent | Inject the fresh Human capability vector before multi-objective matching | Neural ranker, constraint solver, bandit or reinforcement learner |
 | Capability Modeling | Versioned capability vectors, evidence and confidence | Benchmark import, embeddings, graph features |
-| Adaptive Planner | Multi-objective matching, route generation and decision trace | Neural ranker, constraint solver, bandit or reinforcement learner |
 | Executor Registry | One `execute(task, context)` contract across subject types | Custom LLM, PyTorch, sklearn, API and human executors |
 | LangGraph Engine | DAG compilation, state propagation and pause/resume | Checkpointer, parallel branches, conditional edges |
 | Capability Learning | Updates from outcomes, correction and disagreement | Bayesian calibration, online learning, drift detection |

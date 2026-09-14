@@ -150,9 +150,13 @@ class NodeModelSettingsUpdate(ModelSettingsUpdate):
     modality: str = "text"
 
 
-class HumanAssessmentGenerateRequest(BaseModel):
-    design_requirement: str = Field(min_length=8)
+class PlanningStartRequest(TaskUnderstandRequest):
+    pass
 
 
-class HumanAssessmentSubmitRequest(BaseModel):
+class PlanningCompleteRequest(BaseModel):
     answers: dict[str, int]
+    capability_space: list[CapabilitySubject]
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {"fit": .65, "reliability": .2, "cost": .1, "latency": .05}
+    )

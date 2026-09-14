@@ -1,9 +1,14 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addEdge, useEdgesState, useNodesState, type Connection, type Edge, type Node } from "@xyflow/react";
 import { Bot, BrainCircuit, Database, Download, GitBranch, KeyRound, LoaderCircle, Play, Plus, Save, Search, SlidersHorizontal, Sparkles, Trash2, UserRound, Wrench } from "lucide-react";
 import { WorkflowCanvas } from "@/components/workflow/workflow-canvas";
+import {
+  AbilityTestDialog,
+  type AbilityQuestion,
+  type PlanningAgentTrace,
+} from "@/components/planning/ability-test-dialog";
 import { apiDownload, apiFetch, defaultCapabilitySpace, type SubjectType, type WorkflowPlan, type WorkflowPlanNode } from "@/lib/api";
 import type { AgentKind, WorkflowNodeData } from "@/lib/platform-data";
 
@@ -68,7 +73,26 @@ function defaultConfig(kind: AgentKind): Record<string, unknown> {
   return { connector:"passthrough", operation:"transform", timeout_seconds:60, retry:1 };
 }
 
-export function StudioView({ notify }: { notify:(message:string)=>void }) {
+interface PlanningSession {
+  session_id: string;
+  task_id: string;
+  questions: AbilityQuestion[];
+  agent_trace: PlanningAgentTrace[];
+}
+
+interface TaskDetail {
+  task: { id:string; title:string; prompt:string; status:string };
+  workflow: WorkflowPlan | null;
+  planning_session: PlanningSession | null;
+}
+
+export function StudioView({
+  notify,
+  openTaskId,
+}: {
+  notify:(message:string)=>void;
+  openTaskId?: string | null;
+}) {
   const [task,setTask] = useState("分析学生学习数据，预测学业风险，并生成个性化教学建议，最后由教师复核");
   const [selectedId,setSelectedId] = useState("");
   const [planning,setPlanning] = useState(false);
@@ -78,26 +102,79 @@ export function StudioView({ notify }: { notify:(message:string)=>void }) {
   const [edges,setEdges,onEdgesChange] = useEdgesState<Edge>([]);
   const [execution,setExecution] = useState<Record<string, unknown> | null>(null);
   const [nodeApiKeys,setNodeApiKeys] = useState<Record<string,string>>({});
+  const [planningSession,setPlanningSession] = useState<PlanningSession | null>(null);
+  const [submittingAssessment,setSubmittingAssessment] = useState(false);
   const customNodeCounter = useRef(0);
   const selected = useMemo(() => nodes.find(node => node.id === selectedId), [nodes, selectedId]);
   const selectedUsesDefault = selected?.data.config?.use_default_model !== false;
 
   const onConnect = useCallback((connection: Connection) => setEdges(current => addEdge({...connection, animated:true}, current)), [setEdges]);
 
+  useEffect(() => {
+    if (!openTaskId) return;
+    void apiFetch<TaskDetail>(`/tasks/${openTaskId}`)
+      .then(detail => {
+        setTask(detail.task.prompt);
+        if (!detail.workflow) {
+          setPlan(null); setNodes([]); setEdges([]); setSelectedId("");
+          if (detail.planning_session) {
+            setPlanningSession(detail.planning_session);
+            notify("已恢复该任务尚未完成的能力测试");
+          } else notify("该任务尚未完成能力测试和自动规划");
+          return;
+        }
+        const visual = layoutPlan(detail.workflow);
+        setPlan(detail.workflow); setNodes(visual.nodes); setEdges(visual.edges);
+        setSelectedId(visual.nodes[0]?.id || "");
+        notify(`已打开任务：${detail.task.title}`);
+      })
+      .catch(error => notify(error instanceof Error ? error.message : "任务读取失败"))
+      .finally(() => setPlanning(false));
+  }, [notify, openTaskId, setEdges, setNodes]);
+
   const buildPlan = async () => {
     if (task.trim().length < 8) return notify("请先输入更完整的任务需求");
     setPlanning(true);
     setExecution(null);
     try {
-      const graph = await apiFetch<Record<string, unknown> & { task_id:string; subtasks:unknown[]; planning_mode:string }>("/tasks/understand", { method:"POST", body:JSON.stringify({prompt:task,constraints:{}}) });
-      const profile = await apiFetch<{capability:Record<string,number>}>("/human-assessments/profile").catch(() => ({capability:{}}));
-      const capabilitySpace = defaultCapabilitySpace.map(subject => subject.subject_type === "human" ? {...subject, capability:{...subject.capability,...profile.capability}} : subject);
-      const generated = await apiFetch<WorkflowPlan>("/workflows/plan", { method:"POST", body:JSON.stringify({task_graph:graph,capability_space:capabilitySpace,user_profile:profile.capability}) });
-      const visual = layoutPlan(generated);
-      setPlan(generated); setNodes(visual.nodes); setEdges(visual.edges); setSelectedId(visual.nodes[0]?.id || "");
-      notify(`已通过${graph.planning_mode === "llm" ? "模型" : "规则降级"}规划生成 ${visual.nodes.length} 个节点`);
+      const session = await apiFetch<PlanningSession>("/planning-sessions/start", {
+        method:"POST",
+        body:JSON.stringify({prompt:task,constraints:{}}),
+      });
+      setPlanningSession(session);
+      notify("问题解析与动态出题已完成，请完成能力测试");
     } catch (error) { notify(error instanceof Error ? error.message : "自动规划失败"); }
     finally { setPlanning(false); }
+  };
+
+  const completeAssessment = async (answers: Record<string,number>) => {
+    if (!planningSession) return;
+    setSubmittingAssessment(true);
+    try {
+      const result = await apiFetch<{
+        diagnosis:{overall:number};
+        workflow:WorkflowPlan;
+        agent_trace:PlanningAgentTrace[];
+      }>(`/planning-sessions/${planningSession.session_id}/complete`, {
+        method:"POST",
+        body:JSON.stringify({answers,capability_space:defaultCapabilitySpace}),
+      });
+      const visual = layoutPlan(result.workflow);
+      setPlan(result.workflow); setNodes(visual.nodes); setEdges(visual.edges);
+      setSelectedId(visual.nodes[0]?.id || ""); setPlanningSession(null);
+      notify(`能力诊断 ${Math.round(result.diagnosis.overall*100)}%，已据此生成 ${visual.nodes.length} 个协同节点`);
+    } catch (error) { notify(error instanceof Error ? error.message : "能力诊断或任务规划失败"); }
+    finally { setSubmittingAssessment(false); }
+  };
+
+  const cancelAssessment = async () => {
+    if (!planningSession || submittingAssessment) return;
+    const sessionId = planningSession.session_id;
+    setPlanningSession(null);
+    try {
+      await apiFetch<{deleted:boolean}>(`/planning-sessions/${sessionId}`, {method:"DELETE"});
+      notify("已取消本次能力测试，未创建任务");
+    } catch (error) { notify(error instanceof Error ? error.message : "取消测试失败"); }
   };
 
   const toPlanNodes = (): WorkflowPlanNode[] => nodes.map(node => {
@@ -193,9 +270,15 @@ export function StudioView({ notify }: { notify:(message:string)=>void }) {
     setSelectedId(""); notify("节点及相关连线已删除");
   };
 
-  return <div className="studio-shell">
+  return <><div className="studio-shell">
     <aside className="component-panel"><div className="studio-panel-title"><h3>智能主体</h3><SlidersHorizontal size={14}/></div><div className="component-search"><Search size={14}/><input placeholder="搜索组件"/></div><div className="component-group"><h4>点击添加到画布</h4>{components.map(({name,kind,desc,icon:Icon,bg,color}) => <button className="component-item component-button" key={name} onClick={() => addNode(kind)}><span className="component-symbol" style={{background:bg,color}}><Icon size={15}/></span><div><div className="component-name">{name}</div><div className="component-desc">{desc}</div></div><Plus size={13} className="component-plus"/></button>)}</div></aside>
     <section className="canvas-column"><div className="task-composer"><div className="composer-box"><Sparkles size={16} color="#719c29"/><textarea aria-label="任务描述" value={task} onChange={event => setTask(event.target.value)}/><button className="primary-button lime" onClick={buildPlan} disabled={planning || running}>{planning ? <LoaderCircle className="spin" size={14}/> : <GitBranch size={14}/>}自动规划</button><button className="primary-button" onClick={run} disabled={running || !plan}>{running ? <LoaderCircle className="spin" size={14}/> : <Play size={13}/>}运行并导出</button></div></div><div className="workflow-canvas"><div className="canvas-toolbar"><button className="canvas-chip active">{plan ? `${nodes.length} 节点动态工作流` : "输入任务后自动规划"}</button><button className="canvas-chip" onClick={() => void save()}><Save size={11}/>保存</button>{plan && <button className="canvas-chip" onClick={() => void downloadBundle(plan.id)}><Download size={11}/>导出</button>}</div><WorkflowCanvas nodes={nodes} edges={edges} selectedId={selectedId} onSelect={setSelectedId} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}/>{!nodes.length && <div className="canvas-empty"><GitBranch size={28}/><strong>等待生成动态工作流</strong><span>输入任务后，系统将分析能力需求并选择 LLM、ML、工具或人类。</span></div>}</div></section>
     <aside className="config-panel"><div className="studio-panel-title"><h3>节点配置</h3>{selected && <button className="danger-icon" onClick={deleteSelected} title="删除节点"><Trash2 size={14}/></button>}</div>{selected ? <div className="config-content"><div className="config-section"><span className="field-label">节点名称</span><input className="field-input" value={selected.data.label} onChange={event => updateSelected({label:event.target.value})}/><span className="field-label">主体类型</span><select className="field-input" value={selected.data.kind} onChange={event => {const kind=event.target.value as AgentKind;updateSelected({kind,config:defaultConfig(kind)})}}>{["LLM","ML","Human","Tool","Knowledge","Adaptive"].map(kind => <option key={kind}>{kind}</option>)}</select></div><div className="config-section"><h4>选择依据（可修订）</h4><textarea className="field-textarea" value={selected.data.reason} onChange={event => updateSelected({reason:event.target.value})}/></div>{selected.data.kind === "LLM" && <div className="config-section"><h4>LLM 模型与提示词</h4><span className="field-label">模型作用域</span><div className="model-scope-toggle"><button className={selectedUsesDefault ? "active" : ""} onClick={() => updateConfig("use_default_model",true)}>继承系统默认</button><button className={!selectedUsesDefault ? "active" : ""} onClick={() => updateConfigValues({use_default_model:false,provider:selected.data.config?.provider || "openai-compatible",model:selected.data.config?.model || "gpt-4.1-mini",base_url:selected.data.config?.base_url || "",modality:selected.data.config?.modality || "text"})}>此节点独立配置</button></div>{!selectedUsesDefault && <><span className="field-label">接口类型</span><select className="field-input" value={String(selected.data.config?.provider || "openai-compatible")} onChange={event => updateNodeProvider(event.target.value)}>{modelProviders.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select><span className="field-label">模型名称 / 微调模型 ID</span><input className="field-input" value={String(selected.data.config?.model || "")} onChange={event => updateConfig("model",event.target.value)} placeholder="模型名或你的 fine-tuned model ID"/><span className="field-label">模型能力</span><select className="field-input" value={String(selected.data.config?.modality || "text")} onChange={event => updateConfig("modality",event.target.value)}><option value="text">文本 / 推理</option><option value="vision">视觉理解（读取图像 URL）</option></select>{String(selected.data.config?.modality || "text") === "vision" && <><span className="field-label">测试图像 URL（每行一个）</span><textarea className="field-textarea" value={Array.isArray(selected.data.config?.image_urls) ? (selected.data.config?.image_urls as string[]).join("\n") : ""} onChange={event => updateConfig("image_urls",event.target.value.split("\n").map(value => value.trim()).filter(Boolean))} placeholder="https://example.com/image.jpg"/></>}<span className="field-label">Base URL</span><input className="field-input" value={String(selected.data.config?.base_url || "")} onChange={event => updateConfig("base_url",event.target.value)} placeholder="https://你的网关域名/v1"/><span className="field-label">节点 API Key {Boolean(selected.data.config?.api_key_configured) && "（留空保持原 Key）"}</span><div className="secret-input"><KeyRound size={14}/><input type="password" value={nodeApiKeys[selected.id] || ""} onChange={event => setNodeApiKeys(current => ({...current,[selected.id]:event.target.value}))} placeholder={selected.data.config?.api_key_configured ? "••••••••••••••••" : "sk-..."}/></div><p className="field-help">Key 单独加密保存；运行时此节点配置优先于系统默认模型。</p></>}<span className="field-label">System Prompt</span><textarea className="code-editor" value={String(selected.data.config?.system_prompt || "")} onChange={event => updateConfig("system_prompt",event.target.value)}/><span className="field-label">Prompt Template</span><textarea className="code-editor" value={String(selected.data.config?.prompt_template || "")} onChange={event => updateConfig("prompt_template",event.target.value)}/><span className="field-label">Temperature</span><input className="field-input" type="number" min="0" max="2" step="0.1" value={Number(selected.data.config?.temperature ?? .2)} onChange={event => updateConfig("temperature",Number(event.target.value))}/></div>}{selected.data.kind === "ML" && <div className="config-section"><h4>Python ML 代码</h4><textarea className="code-editor tall" spellCheck={false} value={String(selected.data.config?.code || "")} onChange={event => updateConfig("code",event.target.value)}/><p className="field-help">导出包中执行。代码必须定义 run(payload, upstream)。平台服务端不会直接运行任意代码。</p></div>}{selected.data.kind === "Human" && <div className="config-section"><h4>人工任务</h4><span className="field-label">操作说明</span><textarea className="field-textarea" value={String(selected.data.config?.instruction || "")} onChange={event => updateConfig("instruction",event.target.value)}/><span className="field-label">通过标准</span><textarea className="field-textarea" value={String(selected.data.config?.approval_criteria || "")} onChange={event => updateConfig("approval_criteria",event.target.value)}/></div>}<div className="config-section"><h4>能力需求与匹配</h4>{Object.entries(selected.data.capabilities).map(([name,value]) => <div className="cap-row" key={name}><div className="cap-head"><span>{name}</span><strong>{Math.round(value*100)}%</strong></div><div className="cap-track"><div className="cap-fill" style={{width:`${value*100}%`}}/></div></div>)}</div>{execution && <div className="config-section"><h4>最近运行结果</h4><pre className="execution-output">{JSON.stringify(execution,null,2)}</pre></div>}</div> : <div className="config-placeholder">选择节点后可修改名称、类型、提示词、代码和人工指令。</div>}</aside>
-  </div>;
+  </div>{planningSession && <AbilityTestDialog
+    questions={planningSession.questions}
+    trace={planningSession.agent_trace}
+    submitting={submittingAssessment}
+    onCancel={() => void cancelAssessment()}
+    onSubmit={answers => void completeAssessment(answers)}
+  />}</>;
 }

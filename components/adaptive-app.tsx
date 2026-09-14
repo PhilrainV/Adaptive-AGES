@@ -18,7 +18,8 @@ const views = {
 };
 
 export function AdaptiveApp() {
-  const [active, setActive] = useState<ViewKey>("studio");
+  const [active, setActive] = useState<ViewKey>("dashboard");
+  const [openTaskId,setOpenTaskId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const CurrentIcon = views[active].icon;
   const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2600); }, []);
@@ -34,7 +35,7 @@ export function AdaptiveApp() {
     </aside>
     <main className="main-area">
       <header className="topbar"><div className="page-title"><h1>{views[active].title}</h1><p>{views[active].caption}</p></div><div className="search-box"><Search size={16}/><input aria-label="全局搜索" placeholder="搜索 Agent、任务或工作流"/><span className="key-hint">⌘ K</span></div><div className="top-actions"><button className="icon-button" aria-label="消息"><Bell size={17}/></button><div className="avatar" title="当前用户">PW</div></div></header>
-      <div className="content">{active === "dashboard" && <DashboardView onNavigate={() => setActive("studio")}/>} {active === "studio" && <StudioView notify={notify}/>} {active === "capabilities" && <CapabilitiesView notify={notify}/>} {active === "profile" && <ProfileView notify={notify}/>} {active === "settings" && <SettingsView notify={notify}/>}</div>
+      <div className="content">{active === "dashboard" && <DashboardView onCreate={() => {setOpenTaskId(null);setActive("studio")}} onOpenTask={taskId => {setOpenTaskId(taskId);setActive("studio")}} notify={notify}/>} {active === "studio" && <StudioView key={openTaskId || "new-task"} notify={notify} openTaskId={openTaskId}/>} {active === "capabilities" && <CapabilitiesView notify={notify}/>} {active === "profile" && <ProfileView/>} {active === "settings" && <SettingsView notify={notify}/>}</div>
     </main>
     {toast && <div className="toast"><CurrentIcon size={16}/>{toast}</div>}
   </div>;
