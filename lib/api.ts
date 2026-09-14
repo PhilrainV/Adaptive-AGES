@@ -7,9 +7,13 @@ type Session = { email: string; password: string; token?: string };
 
 function session(): Session {
   const saved = window.localStorage.getItem(SESSION_KEY);
-  if (saved) return JSON.parse(saved) as Session;
+  if (saved) {
+    const current = JSON.parse(saved) as Session;
+    if (!current.email.endsWith("@adaptive.local")) return current;
+    window.localStorage.removeItem(SESSION_KEY);
+  }
   const id = crypto.randomUUID().slice(0, 12);
-  const created = { email: `workspace-${id}@adaptive.local`, password: `Aa!${crypto.randomUUID()}` };
+  const created = { email: `workspace-${id}@adaptive-ages.dev`, password: `Aa!${crypto.randomUUID()}` };
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(created));
   return created;
 }
@@ -26,7 +30,16 @@ async function authenticate(current: Session): Promise<string> {
       body: JSON.stringify({ email: current.email, password: current.password }),
     });
   }
-  if (!response.ok) throw new Error("无法创建本地工作区会话");
+  if (!response.ok) {
+    let reason = `HTTP ${response.status}`;
+    try {
+      const error = await response.json() as { detail?: string | Array<{ msg?: string }> };
+      reason = typeof error.detail === "string"
+        ? error.detail
+        : error.detail?.map(item => item.msg).filter(Boolean).join("；") || reason;
+    } catch {}
+    throw new Error(`无法创建本地工作区会话：${reason}`);
+  }
   const body = await response.json() as { access_token: string };
   current.token = body.access_token;
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(current));
