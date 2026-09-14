@@ -3,8 +3,18 @@ import zipfile
 
 import pytest
 
+from app.agents.ability_diagnosis_agent import AbilityDiagnosisAgent
+from app.agents.capability_planning_agent import CapabilityPlanningAgent
+from app.agents.problem_analysis_agent import ProblemAnalysisAgent
+from app.agents.test_generation_agent import TestGenerationAgent as AssessmentTestGenerationAgent
 from app.executors.registry import ExecutorRegistry
-from app.schemas.domain import SubjectType, WorkflowEdge, WorkflowNode, WorkflowPlan
+from app.schemas.domain import (
+    CapabilitySubject,
+    SubjectType,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowPlan,
+)
 from app.services.human_assessment import HumanCapabilityAssessmentService
 from app.services.workflow_export import export_workflow_bundle
 from app.workflow.langgraph_engine import LangGraphExecutionEngine
@@ -29,6 +39,48 @@ def test_task_adaptive_assessment_updates_multiple_dimensions():
     assert result["overall"] == 1
     assert set(result["capability"]) == set(service.dimensions)
     assert "教育数据预测" in questions[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_four_planning_agents_form_an_assessment_first_pipeline():
+    graph = await ProblemAnalysisAgent().run("分析学生数据，预测风险并由教师复核")
+    questions, mode = await AssessmentTestGenerationAgent().run(graph)
+    answers = {item["id"]: item["correct_index"] for item in questions}
+    diagnosis = AbilityDiagnosisAgent().run(questions, answers)
+    subjects = [
+        CapabilitySubject(
+            id="llm",
+            name="LLM",
+            subject_type=SubjectType.LLM,
+            capability={"reasoning": .95, "generation": .95, "interpretation": .9},
+        ),
+        CapabilitySubject(
+            id="ml",
+            name="ML",
+            subject_type=SubjectType.ML,
+            capability={"prediction": .96, "data_processing": .9},
+        ),
+        CapabilitySubject(
+            id="human",
+            name="Human",
+            subject_type=SubjectType.HUMAN,
+            capability={"human_judgement": .1, "domain_knowledge": .1},
+            reliability=.9,
+        ),
+        CapabilitySubject(
+            id="tool",
+            name="Tool",
+            subject_type=SubjectType.TOOL,
+            capability={"data_processing": .98},
+        ),
+    ]
+    plan = CapabilityPlanningAgent().run(graph, subjects, diagnosis)
+
+    assert mode == "rule"
+    assert diagnosis["overall"] == 1
+    assert diagnosis["planning_capability"]["human_judgement"] == 1
+    assert plan.task_id == graph.task_id
+    assert plan.decision_trace[0]["agent"] == "capability_planning_agent"
 
 
 def test_export_contains_runner_graph_and_editable_ml_module():

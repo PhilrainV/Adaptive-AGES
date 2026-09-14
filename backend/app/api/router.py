@@ -1,10 +1,16 @@
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response, status
 from langchain_openai import ChatOpenAI
 from sqlalchemy import select
 
+from app.agents import (
+    AbilityDiagnosisAgent,
+    CapabilityPlanningAgent,
+    ProblemAnalysisAgent,
+    TestGenerationAgent,
+)
 from app.api.deps import CurrentUserId, DbSession
 from app.core.secrets import decrypt_secret, encrypt_secret
 from app.core.security import create_access_token, hash_password, verify_password
@@ -27,12 +33,13 @@ from app.models.entities import (
 from app.schemas.domain import (
     AgentCreate,
     FeedbackCreate,
-    HumanAssessmentGenerateRequest,
-    HumanAssessmentSubmitRequest,
     LoginRequest,
     ModelSettingsUpdate,
     NodeModelSettingsUpdate,
+    PlanningCompleteRequest,
+    PlanningStartRequest,
     PlanRequest,
+    TaskGraph,
     TaskUnderstandRequest,
     UserCreate,
     WorkflowPlan,
@@ -49,6 +56,10 @@ router = APIRouter()
 understanding = TaskUnderstandingEngine()
 planner = AdaptivePlanner()
 assessment = HumanCapabilityAssessmentService()
+problem_analysis_agent = ProblemAnalysisAgent(understanding)
+test_generation_agent = TestGenerationAgent(assessment)
+ability_diagnosis_agent = AbilityDiagnosisAgent(assessment)
+capability_planning_agent = CapabilityPlanningAgent(planner)
 
 
 PROVIDER_BASE_URLS = {
@@ -101,36 +112,48 @@ async def get_dashboard(user_id: CurrentUserId, db: DbSession):
     workflows = list((await db.scalars(
         select(Workflow).where(Workflow.owner_id == user_id).order_by(Workflow.updated_at.desc())
     )).all())
-    tasks = list((await db.scalars(select(Task).where(Task.owner_id == user_id))).all())
+    tasks = list(
+        (
+            await db.scalars(
+                select(Task).where(Task.owner_id == user_id).order_by(Task.updated_at.desc())
+            )
+        ).all()
+    )
     executions = list((await db.scalars(
         select(WorkflowExecution).join(Workflow).where(Workflow.owner_id == user_id)
         .order_by(WorkflowExecution.created_at.desc())
     )).all())
-    task_map = {item.id: item for item in tasks}
     workflow_map = {item.id: item for item in workflows}
     latest_execution = {}
     for item in executions:
         latest_execution.setdefault(item.workflow_id, item)
     terminal = [item for item in executions if item.status in {"completed", "failed"}]
     completed = sum(item.status == "completed" for item in terminal)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     month_executions = sum(
         bool(item.created_at and item.created_at.year == now.year and item.created_at.month == now.month)
         for item in executions
     )
+    latest_workflow_by_task = {}
+    for workflow in workflows:
+        latest_workflow_by_task.setdefault(workflow.task_id, workflow)
     recent_tasks = []
-    for workflow in workflows[:8]:
-        execution = latest_execution.get(workflow.id)
-        nodes = workflow.definition.get("nodes", [])
+    for task in tasks[:8]:
+        workflow = latest_workflow_by_task.get(task.id)
+        execution = latest_execution.get(workflow.id) if workflow else None
+        nodes = workflow.definition.get("nodes", []) if workflow else []
         types = list(dict.fromkeys(node.get("subject_type", "tool") for node in nodes))
         scores = [float(node.get("match_score", 0)) for node in nodes if node.get("match_score") is not None]
         recent_tasks.append({
-            "id": workflow.id,
-            "title": task_map.get(workflow.task_id).title if task_map.get(workflow.task_id) else workflow.name,
+            "id": task.id,
+            "workflow_id": workflow.id if workflow else None,
+            "title": task.title,
             "agents": types,
-            "status": execution.status if execution else workflow.status,
+            "status": execution.status if execution else workflow.status if workflow else task.status,
             "match_score": sum(scores) / len(scores) if scores else 0,
-            "updated_at": (execution.created_at if execution else workflow.updated_at).isoformat(),
+            "updated_at": (
+                execution.created_at if execution else workflow.updated_at if workflow else task.updated_at
+            ).isoformat(),
         })
     activities = []
     for execution in executions[:8]:
@@ -218,6 +241,287 @@ async def understand_task(payload: TaskUnderstandRequest, user_id: CurrentUserId
     db.add(TaskGraphRecord(task_id=task.id, graph=graph.model_dump(mode="json")))
     await db.commit()
     return graph
+
+
+@router.post("/planning-sessions/start", status_code=status.HTTP_201_CREATED)
+async def start_planning_session(
+    payload: PlanningStartRequest,
+    user_id: CurrentUserId,
+    db: DbSession,
+):
+    """Run agents 1 and 2, then pause so the user can complete the generated test."""
+    task = Task(
+        owner_id=user_id,
+        title=payload.prompt[:120],
+        prompt=payload.prompt,
+        constraints=payload.constraints,
+        status="assessing",
+    )
+    db.add(task)
+    await db.flush()
+    model_config = await model_config_for(db, user_id)
+    graph = await problem_analysis_agent.run(payload.prompt, model_config)
+    graph.task_id = task.id
+    task.complexity = graph.complexity
+    task.task_type = graph.subtasks[-1].task_type
+    db.add(TaskGraphRecord(task_id=task.id, graph=graph.model_dump(mode="json")))
+
+    questions, generation_mode = await test_generation_agent.run(graph, model_config)
+    assessment_record = HumanAssessment(
+        user_id=user_id,
+        design_requirement=payload.prompt,
+        questions=questions,
+        result={
+            "task_id": task.id,
+            "task_graph": graph.model_dump(mode="json"),
+            "test_generation_mode": generation_mode,
+        },
+        status="awaiting_answers",
+    )
+    db.add(assessment_record)
+    await db.commit()
+    await db.refresh(assessment_record)
+    return {
+        "session_id": assessment_record.id,
+        "task_id": task.id,
+        "task_graph": graph,
+        "questions": assessment.public_questions(questions),
+        "agent_trace": [
+            {
+                "agent": problem_analysis_agent.name,
+                "status": "completed",
+                "summary": f"已解析为 {len(graph.subtasks)} 个子任务",
+                "mode": graph.planning_mode,
+            },
+            {
+                "agent": test_generation_agent.name,
+                "status": "completed",
+                "summary": f"已生成 {len(questions)} 道任务自适应测试题",
+                "mode": generation_mode,
+            },
+            {"agent": ability_diagnosis_agent.name, "status": "waiting_for_answers"},
+            {"agent": capability_planning_agent.name, "status": "waiting_for_diagnosis"},
+        ],
+    }
+
+
+@router.post("/planning-sessions/{session_id}/complete")
+async def complete_planning_session(
+    session_id: str,
+    payload: PlanningCompleteRequest,
+    user_id: CurrentUserId,
+    db: DbSession,
+):
+    """Run agents 3 and 4 with fresh test evidence and persist the resulting workflow."""
+    record = await db.scalar(
+        select(HumanAssessment).where(
+            HumanAssessment.id == session_id,
+            HumanAssessment.user_id == user_id,
+        )
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Planning session not found")
+    if record.status == "completed":
+        raise HTTPException(status_code=409, detail="该测试已经提交并完成规划")
+    expected_question_ids = {item["id"] for item in record.questions}
+    if set(payload.answers) != expected_question_ids:
+        raise HTTPException(status_code=400, detail="请完成全部测试题后再生成规划")
+
+    session_state = dict(record.result or {})
+    task_id = session_state.get("task_id")
+    task = await db.scalar(
+        select(Task).where(Task.id == task_id, Task.owner_id == user_id)
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    graph = TaskGraph.model_validate(session_state.get("task_graph"))
+
+    diagnosis = ability_diagnosis_agent.run(record.questions, payload.answers)
+    plan = capability_planning_agent.run(
+        graph,
+        payload.capability_space,
+        diagnosis,
+        payload.weights,
+    )
+    workflow = Workflow(
+        owner_id=user_id,
+        task_id=task.id,
+        name=f"{task.title} · 自适应工作流",
+        definition=plan.model_dump(mode="json"),
+        decision_trace={"items": plan.decision_trace},
+        status="ready",
+    )
+    db.add(workflow)
+    await db.flush()
+    plan.id = workflow.id
+    workflow.definition = plan.model_dump(mode="json")
+    task.status = "planned"
+
+    record.answers = payload.answers
+    record.result = {**session_state, "diagnosis": diagnosis, "workflow_id": workflow.id}
+    record.status = "completed"
+    profile = await db.scalar(select(HumanProfile).where(HumanProfile.user_id == user_id))
+    if not profile:
+        profile = HumanProfile(user_id=user_id)
+        db.add(profile)
+    profile.capability_vector = {
+        **diagnosis["capability"],
+        **diagnosis["planning_capability"],
+    }
+    profile.decision_history = {
+        "source": "automatic_planning_assessment",
+        "assessment_id": record.id,
+        "task_id": task.id,
+        "design_requirement": record.design_requirement,
+        "overall": diagnosis["overall"],
+        "confidence": diagnosis["confidence"],
+        "weakest_dimensions": diagnosis["weakest_dimensions"],
+    }
+    user = await db.scalar(select(User).where(User.id == user_id))
+    if user:
+        user.adaptive_profile = profile.capability_vector
+    await db.commit()
+    return {
+        "task_graph": graph,
+        "diagnosis": diagnosis,
+        "workflow": plan,
+        "agent_trace": [
+            {"agent": problem_analysis_agent.name, "status": "completed"},
+            {"agent": test_generation_agent.name, "status": "completed"},
+            {
+                "agent": ability_diagnosis_agent.name,
+                "status": "completed",
+                "summary": f"综合能力 {diagnosis['overall']:.0%}",
+            },
+            {
+                "agent": capability_planning_agent.name,
+                "status": "completed",
+                "summary": f"已生成 {len(plan.nodes)} 个协同节点",
+            },
+        ],
+    }
+
+
+@router.delete("/planning-sessions/{session_id}")
+async def cancel_planning_session(
+    session_id: str,
+    user_id: CurrentUserId,
+    db: DbSession,
+):
+    record = await db.scalar(
+        select(HumanAssessment).where(
+            HumanAssessment.id == session_id,
+            HumanAssessment.user_id == user_id,
+        )
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Planning session not found")
+    if record.status == "completed":
+        raise HTTPException(status_code=409, detail="已完成的规划不能作为临时测试取消")
+    task_id = (record.result or {}).get("task_id")
+    task = await db.scalar(
+        select(Task).where(Task.id == task_id, Task.owner_id == user_id)
+    )
+    await db.delete(record)
+    if task:
+        await db.delete(task)
+    await db.commit()
+    return {"deleted": True}
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(task_id: str, user_id: CurrentUserId, db: DbSession):
+    task = await db.scalar(
+        select(Task).where(Task.id == task_id, Task.owner_id == user_id)
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    graph = await db.scalar(select(TaskGraphRecord).where(TaskGraphRecord.task_id == task.id))
+    workflow = await db.scalar(
+        select(Workflow)
+        .where(Workflow.task_id == task.id, Workflow.owner_id == user_id)
+        .order_by(Workflow.updated_at.desc())
+    )
+    pending_session = None
+    if not workflow:
+        assessment_records = list(
+            (
+                await db.scalars(
+                    select(HumanAssessment)
+                    .where(
+                        HumanAssessment.user_id == user_id,
+                        HumanAssessment.status == "awaiting_answers",
+                    )
+                    .order_by(HumanAssessment.updated_at.desc())
+                )
+            ).all()
+        )
+        assessment_record = next(
+            (
+                item
+                for item in assessment_records
+                if (item.result or {}).get("task_id") == task.id
+            ),
+            None,
+        )
+        if assessment_record:
+            pending_session = {
+                "session_id": assessment_record.id,
+                "task_id": task.id,
+                "questions": assessment.public_questions(assessment_record.questions),
+                "agent_trace": [
+                    {
+                        "agent": problem_analysis_agent.name,
+                        "status": "completed",
+                        "summary": f"已解析为 {len(graph.graph.get('subtasks', [])) if graph else 0} 个子任务",
+                    },
+                    {
+                        "agent": test_generation_agent.name,
+                        "status": "completed",
+                        "summary": f"已生成 {len(assessment_record.questions)} 道任务自适应测试题",
+                        "mode": (assessment_record.result or {}).get("test_generation_mode"),
+                    },
+                    {"agent": ability_diagnosis_agent.name, "status": "waiting_for_answers"},
+                    {"agent": capability_planning_agent.name, "status": "waiting_for_diagnosis"},
+                ],
+            }
+    return {
+        "task": {
+            "id": task.id,
+            "title": task.title,
+            "prompt": task.prompt,
+            "status": task.status,
+            "task_type": task.task_type,
+            "complexity": task.complexity,
+            "constraints": task.constraints,
+            "updated_at": task.updated_at.isoformat(),
+        },
+        "task_graph": graph.graph if graph else None,
+        "workflow": public_workflow_definition(workflow.definition) if workflow else None,
+        "planning_session": pending_session,
+    }
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, user_id: CurrentUserId, db: DbSession):
+    task = await db.scalar(
+        select(Task).where(Task.id == task_id, Task.owner_id == user_id)
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    assessment_records = list(
+        (
+            await db.scalars(
+                select(HumanAssessment).where(HumanAssessment.user_id == user_id)
+            )
+        ).all()
+    )
+    for assessment_record in assessment_records:
+        if (assessment_record.result or {}).get("task_id") == task.id:
+            await db.delete(assessment_record)
+    await db.delete(task)
+    await db.commit()
+    return {"deleted": True, "task_id": task_id}
 
 
 @router.post("/workflows/plan", response_model=WorkflowPlan)
@@ -409,44 +713,6 @@ async def test_model_settings(user_id: CurrentUserId, db: DbSession):
 async def get_human_profile(user_id: CurrentUserId, db: DbSession):
     profile = await db.scalar(select(HumanProfile).where(HumanProfile.user_id == user_id))
     return {"capability": profile.capability_vector if profile else {}, "evidence": profile.decision_history if profile else {}}
-
-
-@router.post("/human-assessments/generate", status_code=status.HTTP_201_CREATED)
-async def generate_human_assessment(payload: HumanAssessmentGenerateRequest, user_id: CurrentUserId, db: DbSession):
-    questions = assessment.generate(payload.design_requirement)
-    record = HumanAssessment(user_id=user_id, design_requirement=payload.design_requirement, questions=questions)
-    db.add(record)
-    await db.commit()
-    await db.refresh(record)
-    return {
-        "assessment_id": record.id, "design_requirement": record.design_requirement,
-        "questions": assessment.public_questions(questions),
-    }
-
-
-@router.post("/human-assessments/{assessment_id}/submit")
-async def submit_human_assessment(assessment_id: str, payload: HumanAssessmentSubmitRequest, user_id: CurrentUserId, db: DbSession):
-    record = await db.scalar(select(HumanAssessment).where(HumanAssessment.id == assessment_id, HumanAssessment.user_id == user_id))
-    if not record:
-        raise HTTPException(status_code=404, detail="Assessment not found")
-    result = assessment.score(record.questions, payload.answers)
-    record.answers = payload.answers
-    record.result = result
-    record.status = "completed"
-    profile = await db.scalar(select(HumanProfile).where(HumanProfile.user_id == user_id))
-    if not profile:
-        profile = HumanProfile(user_id=user_id)
-        db.add(profile)
-    profile.capability_vector = result["capability"]
-    profile.decision_history = {
-        "source": "task_adaptive_assessment", "assessment_id": record.id,
-        "design_requirement": record.design_requirement, "overall": result["overall"],
-    }
-    user = await db.scalar(select(User).where(User.id == user_id))
-    if user:
-        user.adaptive_profile = result["capability"]
-    await db.commit()
-    return result
 
 
 @router.post("/executions/{execution_id}/human-feedback")
