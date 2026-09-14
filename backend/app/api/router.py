@@ -120,7 +120,7 @@ async def get_dashboard(user_id: CurrentUserId, db: DbSession):
     completed = sum(item.status == "completed" for item in terminal)
     now = datetime.now(timezone.utc)
     month_executions = sum(
-        item.created_at and item.created_at.year == now.year and item.created_at.month == now.month
+        bool(item.created_at and item.created_at.year == now.year and item.created_at.month == now.month)
         for item in executions
     )
     recent_tasks = []
@@ -144,7 +144,7 @@ async def get_dashboard(user_id: CurrentUserId, db: DbSession):
             "id": execution.id,
             "title": workflow.name if workflow else "工作流执行",
             "status": execution.status,
-            "created_at": execution.created_at.isoformat(),
+            "created_at": (execution.created_at or now).isoformat(),
         })
     return {
         "display_name": user.display_name if user else "用户",

@@ -23,7 +23,7 @@ const subjectFromKind = (kind: AgentKind): SubjectType => kind === "LLM" ? "llm"
 const modelProviders = [
   { value:"openai", label:"OpenAI", baseUrl:"", model:"gpt-4.1-mini" },
   { value:"newapi", label:"NewAPI / OneAPI", baseUrl:"", model:"gpt-4.1-mini" },
-  { value:"deepseek", label:"DeepSeek", baseUrl:"https://api.deepseek.com/v1", model:"deepseek-chat" },
+  { value:"deepseek", label:"DeepSeek", baseUrl:"https://api.deepseek.com/v1", model:"deepseek-v4-flash" },
   { value:"bailian-cn", label:"百炼（中国内地）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen-plus" },
   { value:"bailian-intl", label:"百炼（国际）", baseUrl:"https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model:"qwen-plus" },
   { value:"openai-compatible", label:"自定义兼容接口", baseUrl:"", model:"gpt-4.1-mini" },

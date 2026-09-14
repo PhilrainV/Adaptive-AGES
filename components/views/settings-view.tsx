@@ -16,7 +16,7 @@ interface ModelSettings {
 const providers = [
   { value:"openai", label:"OpenAI", baseUrl:"", model:"gpt-4.1-mini", placeholder:"https://api.openai.com/v1", help:"OpenAI 官方接口，Base URL 可留空。" },
   { value:"newapi", label:"NewAPI / OneAPI 转接", baseUrl:"", model:"gpt-4.1-mini", placeholder:"https://你的网关域名/v1", help:"填写购买服务时提供的 API 网关，不要填写文档站地址。" },
-  { value:"deepseek", label:"DeepSeek", baseUrl:"https://api.deepseek.com/v1", model:"deepseek-chat", placeholder:"https://api.deepseek.com/v1", help:"DeepSeek 官方 OpenAI-compatible 接口。" },
+  { value:"deepseek", label:"DeepSeek", baseUrl:"https://api.deepseek.com/v1", model:"deepseek-v4-flash", placeholder:"https://api.deepseek.com/v1", help:"DeepSeek 官方 OpenAI-compatible 接口。" },
   { value:"bailian-cn", label:"阿里云百炼（中国内地）", baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen-plus", placeholder:"https://dashscope.aliyuncs.com/compatible-mode/v1", help:"阿里云百炼中国内地兼容接口。" },
   { value:"bailian-intl", label:"阿里云百炼（国际）", baseUrl:"https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model:"qwen-plus", placeholder:"https://dashscope-intl.aliyuncs.com/compatible-mode/v1", help:"阿里云百炼国际兼容接口。" },
   { value:"openai-compatible", label:"自定义 OpenAI-compatible", baseUrl:"", model:"gpt-4.1-mini", placeholder:"https://api.example.com/v1", help:"适用于第三方代理、兼容网关和自托管服务。" },
