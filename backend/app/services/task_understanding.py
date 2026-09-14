@@ -1,5 +1,23 @@
 import hashlib
+
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
 from app.schemas.domain import CapabilityRequirement, Subtask, TaskGraph
+
+
+class GeneratedSubtask(BaseModel):
+    id: str
+    name: str
+    description: str
+    task_type: str
+    requirement: CapabilityRequirement
+    dependencies: list[str] = Field(default_factory=list)
+    risk: float = Field(default=.4, ge=0, le=1)
+
+
+class GeneratedBreakdown(BaseModel):
+    subtasks: list[GeneratedSubtask]
 
 
 class TaskUnderstandingEngine:
@@ -27,4 +45,41 @@ class TaskUnderstandingEngine:
 
         breadth = sum(1 for s in subtasks for value in s.requirement.model_dump().values() if value >= .7)
         complexity = min(.98, .18 + len(subtasks) * .14 + breadth * .035)
-        return TaskGraph(task_id=task_id, goal=prompt, complexity=round(complexity, 3), subtasks=subtasks)
+        return TaskGraph(task_id=task_id, goal=prompt, complexity=round(complexity, 3), subtasks=subtasks, planning_mode="rule")
+
+    async def understand_async(self, prompt: str, model_config: dict | None = None) -> TaskGraph:
+        """Prefer model-based structured planning and fall back to deterministic rules."""
+        if not model_config or not model_config.get("api_key"):
+            return self.understand(prompt)
+        try:
+            llm = ChatOpenAI(
+                api_key=model_config["api_key"],
+                base_url=model_config.get("base_url") or None,
+                model=model_config.get("model") or "gpt-4.1-mini",
+                temperature=0,
+                timeout=45,
+            ).with_structured_output(GeneratedBreakdown)
+            result = await llm.ainvoke(
+                "你是 Adaptive-AGES 任务规划器。把用户需求拆成 2 到 8 个可执行子任务。"
+                "每个子任务只能选择清晰的任务类型：data_processing、prediction、reasoning、generation、human_review 或 tool。"
+                "能力需求字段取 0 到 1；依赖必须只指向列表中更早出现的子任务 id。"
+                "只有涉及高风险、价值判断、责任确认或用户明确要求时才生成人类复核节点。\n\n"
+                f"用户需求：{prompt}"
+            )
+            seen: set[str] = set()
+            cleaned: list[Subtask] = []
+            for index, item in enumerate(result.subtasks[:8]):
+                item_id = item.id.strip() or f"step-{index + 1}"
+                if item_id in seen:
+                    item_id = f"{item_id}-{index + 1}"
+                dependencies = [dep for dep in item.dependencies if dep in seen]
+                cleaned.append(Subtask(**item.model_dump(exclude={"id", "dependencies"}), id=item_id, dependencies=dependencies))
+                seen.add(item_id)
+            if not cleaned:
+                return self.understand(prompt)
+            breadth = sum(1 for s in cleaned for value in s.requirement.model_dump().values() if value >= .7)
+            complexity = min(.98, .18 + len(cleaned) * .14 + breadth * .035)
+            task_id = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+            return TaskGraph(task_id=task_id, goal=prompt, complexity=round(complexity, 3), subtasks=cleaned, planning_mode="llm")
+        except Exception:  # noqa: BLE001 - provider failures must fall back to local planning
+            return self.understand(prompt)

@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 
-export type ViewKey = "dashboard" | "studio" | "capabilities" | "profile";
+export type ViewKey = "dashboard" | "studio" | "capabilities" | "profile" | "settings";
 export type AgentKind = "LLM" | "ML" | "Human" | "Tool" | "Knowledge" | "Adaptive";
 export type NodeState = "idle" | "running" | "done" | "waiting";
 
@@ -12,6 +12,9 @@ export interface WorkflowNodeData extends Record<string, unknown> {
   reason: string;
   capabilities: Record<string, number>;
   state?: NodeState;
+  subjectId?: string;
+  subtaskId?: string;
+  config?: Record<string, unknown>;
 }
 
 export const initialNodes: Node<WorkflowNodeData>[] = [

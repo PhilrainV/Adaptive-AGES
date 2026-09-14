@@ -1,5 +1,6 @@
 from enum import StrEnum
 from typing import Any
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -55,6 +56,7 @@ class TaskGraph(BaseModel):
     goal: str
     complexity: float = Field(ge=0, le=1)
     subtasks: list[Subtask]
+    planning_mode: str = "rule"
 
 
 class TaskUnderstandRequest(BaseModel):
@@ -123,3 +125,29 @@ class FeedbackCreate(BaseModel):
     score: float | None = Field(default=None, ge=0, le=1)
     correction: dict[str, Any] = Field(default_factory=dict)
     rationale: str | None = None
+
+
+class WorkflowUpdate(BaseModel):
+    name: str | None = None
+    nodes: list[WorkflowNode]
+    edges: list[WorkflowEdge]
+
+
+class WorkflowRunRequest(BaseModel):
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelSettingsUpdate(BaseModel):
+    provider: str = "openai-compatible"
+    model: str = "gpt-4.1-mini"
+    base_url: str | None = None
+    api_key: str | None = None
+    temperature: float = Field(default=.2, ge=0, le=2)
+
+
+class HumanAssessmentGenerateRequest(BaseModel):
+    design_requirement: str = Field(min_length=8)
+
+
+class HumanAssessmentSubmitRequest(BaseModel):
+    answers: dict[str, int]

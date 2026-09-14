@@ -43,6 +43,8 @@ The scoring contract is independent from the algorithm. A neural matcher or grap
 | `agents` / `agent_capabilities` | LLM and tool subjects plus evidence-backed capability values |
 | `ml_models` / `model_capabilities` | ML artifact registry, signatures and capabilities |
 | `human_profiles` | Roles, availability, decision history and evolving human capability |
+| `human_assessments` | Task-derived questions, submitted evidence and scored capability vectors |
+| `model_settings` | Per-user provider settings and encrypted model credentials |
 | `tasks` / `task_graphs` | Original goal, constraints and decomposed DAG |
 | `workflows` | Versioned dynamic graph and explainable decision trace |
 | `workflow_executions` | Runtime state, node outputs and pause/resume status |

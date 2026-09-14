@@ -1,10 +1,11 @@
 from typing import Annotated
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.security import decode_access_token
 from app.db.session import get_db
-
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 bearer = HTTPBearer(auto_error=False)

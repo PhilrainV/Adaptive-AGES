@@ -1,4 +1,5 @@
 from uuid import uuid4
+
 from app.schemas.domain import PlanRequest, WorkflowEdge, WorkflowNode, WorkflowPlan
 from app.services.capability_matching import CapabilityMatcher
 
@@ -23,7 +24,27 @@ class AdaptivePlanner:
             subtask_to_node[subtask.id] = node_id
             subject = next(s for s in request.capability_space if s.id == chosen.subject_id)
             total_cost += subject.cost
-            nodes.append(WorkflowNode(id=node_id, subtask_id=subtask.id, subject_id=chosen.subject_id, subject_type=chosen.subject_type, label=subtask.name, match_score=chosen.score, config={"timeout_seconds": 60, "retry": 1}, explainability={"reason": chosen.explanation, "similarity": chosen.similarity, "alternatives": chosen.alternatives}))
+            config = {"timeout_seconds": 60, "retry": 1}
+            if chosen.subject_type.value == "llm":
+                config.update({
+                    "system_prompt": "你是严谨、可解释的任务执行智能体。使用上游结果完成当前子任务，并明确依据与不确定性。",
+                    "prompt_template": f"任务：{subtask.description}\n用户输入：{{input}}\n上游结果：{{upstream}}",
+                    "temperature": .2,
+                })
+            elif chosen.subject_type.value == "ml":
+                config.update({
+                    "runtime": "python",
+                    "requirements": ["numpy", "scikit-learn"],
+                    "code": "def run(payload, upstream):\n    # 在独立导出包中加载模型并替换这里的实现\n    values = payload.get('features', [])\n    return {'prediction': None, 'samples': len(values), 'upstream': upstream}\n",
+                })
+            elif chosen.subject_type.value == "human":
+                config.update({
+                    "instruction": f"请对“{subtask.description}”进行专业判断，指出需要修订的内容并给出理由。",
+                    "approval_criteria": "准确、可解释、符合领域规范，并明确最终责任。",
+                })
+            else:
+                config.update({"connector": "passthrough", "operation": subtask.task_type})
+            nodes.append(WorkflowNode(id=node_id, subtask_id=subtask.id, subject_id=chosen.subject_id, subject_type=chosen.subject_type, label=subtask.name, match_score=chosen.score, config=config, explainability={"reason": chosen.explanation, "similarity": chosen.similarity, "alternatives": chosen.alternatives}))
             trace.append({"subtask_id": subtask.id, "selected": chosen.subject_id, "subject_type": chosen.subject_type, "score": chosen.score, "reason": chosen.explanation, "alternatives": chosen.alternatives})
 
         for subtask in request.task_graph.subtasks:

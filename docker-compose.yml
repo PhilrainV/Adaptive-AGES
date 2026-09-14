@@ -30,6 +30,15 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
 
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    environment:
+      NEXT_PUBLIC_API_URL: /api/v1
+    expose: ["5173"]
+    depends_on: [api]
+
   worker:
     build: ./backend
     command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=info"]
@@ -38,6 +47,19 @@ services:
       DATABASE_URL: postgresql+asyncpg://adaptive:adaptive@postgres:5432/adaptive_ages
       REDIS_URL: redis://redis:6379/0
     depends_on: [api, redis]
+
+  gateway:
+    image: caddy:2-alpine
+    ports: ["8080:8080"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [frontend, api]
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["public"]
+    command: ["tunnel", "--no-autoupdate", "--url", "http://gateway:8080"]
+    depends_on: [gateway]
 
 volumes:
   postgres_data:

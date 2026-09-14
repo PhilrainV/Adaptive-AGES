@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
+
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -87,6 +88,28 @@ class HumanProfile(Base, TimestampMixin):
     capability_vector: Mapped[dict] = mapped_column(JSONB, default=dict)
     availability: Mapped[dict] = mapped_column(JSONB, default=dict)
     decision_history: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class HumanAssessment(Base, TimestampMixin):
+    __tablename__ = "human_assessments"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    design_requirement: Mapped[str] = mapped_column(Text)
+    questions: Mapped[list] = mapped_column(JSONB, default=list)
+    answers: Mapped[dict] = mapped_column(JSONB, default=dict)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+
+
+class ModelSetting(Base, TimestampMixin):
+    __tablename__ = "model_settings"
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    provider: Mapped[str] = mapped_column(String(80), default="openai-compatible")
+    model: Mapped[str] = mapped_column(String(160), default="gpt-4.1-mini")
+    base_url: Mapped[str | None] = mapped_column(String(500))
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    temperature: Mapped[float] = mapped_column(Float, default=.2)
 
 
 class Task(Base, TimestampMixin):

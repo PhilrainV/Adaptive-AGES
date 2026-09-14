@@ -1,5 +1,7 @@
 from typing import Any, TypedDict
+
 from langgraph.graph import END, StateGraph
+
 from app.executors.base import ExecutionContext, HumanInputRequired
 from app.executors.registry import ExecutorRegistry
 from app.schemas.domain import WorkflowPlan
@@ -55,4 +57,7 @@ class LangGraphExecutionEngine:
 
     async def execute(self, plan: WorkflowPlan, execution_id: str, payload: dict[str, Any]) -> WorkflowState:
         graph = self.compile(plan)
-        return await graph.ainvoke({"execution_id": execution_id, "payload": payload, "node_outputs": {}, "status": "running"})
+        result = await graph.ainvoke({"execution_id": execution_id, "payload": payload, "node_outputs": {}, "status": "running"})
+        if result.get("status") == "running":
+            result["status"] = "completed"
+        return result
