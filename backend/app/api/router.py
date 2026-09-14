@@ -64,11 +64,6 @@ def normalized_base_url(provider: str, base_url: str | None) -> str | None:
         if provider in {"newapi", "local"}:
             raise HTTPException(status_code=400, detail="该接口类型必须填写实际 Base URL（通常以 /v1 结尾）")
         return None
-    if "docs.newapi.pro" in value.lower():
-        raise HTTPException(
-            status_code=400,
-            detail="docs.newapi.pro 是 NewAPI 文档站，不是 API 网关。请填写服务商或自部署 NewAPI 的实际地址，例如 https://你的域名/v1",
-        )
     if not value.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Base URL 必须以 http:// 或 https:// 开头")
     return value
