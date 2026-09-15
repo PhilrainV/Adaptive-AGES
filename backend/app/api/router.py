@@ -59,8 +59,8 @@ planner = AdaptivePlanner()
 assessment = HumanCapabilityAssessmentService()
 problem_analysis_agent = ProblemAnalysisAgent(understanding)
 test_generation_agent = TestGenerationAgent(assessment)
-ability_diagnosis_agent = AbilityDiagnosisAgent(assessment)
-capability_planning_agent = CapabilityPlanningAgent(planner)
+ability_diagnosis_agent = AbilityDiagnosisAgent()
+capability_planning_agent = CapabilityPlanningAgent()
 
 
 PROVIDER_BASE_URLS = {
