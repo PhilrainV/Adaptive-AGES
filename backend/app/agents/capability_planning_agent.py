@@ -216,6 +216,8 @@ class CapabilityPlanningAgent:
         policy = {**DEFAULT_POLICY, **config.get("parameters", {})}
         objective = {**DEFAULT_WEIGHTS, **(weights or {})}
         human_vector = diagnosis.get("planning_capability", {})
+        policy["personalization_enabled"] = bool(human_vector) and diagnosis.get("method") != "assessment_disabled"
+        objective = self._objective_for_mode(objective, policy["personalization_enabled"])
         subjects = self._calibrate_humans(capability_space, diagnosis)
         candidates = self._algorithmic_candidates(task_graph, subjects, human_vector, objective, policy)
         return self._complete_pipeline(
@@ -240,6 +242,8 @@ class CapabilityPlanningAgent:
         policy = {**DEFAULT_POLICY, **config.get("parameters", {})}
         objective = {**DEFAULT_WEIGHTS, **(weights or {})}
         human_vector = diagnosis.get("planning_capability", {})
+        policy["personalization_enabled"] = bool(human_vector) and diagnosis.get("method") != "assessment_disabled"
+        objective = self._objective_for_mode(objective, policy["personalization_enabled"])
         subjects = self._calibrate_humans(capability_space, diagnosis)
         candidates = self._algorithmic_candidates(task_graph, subjects, human_vector, objective, policy)
         generation_meta: dict[str, Any] = {"mode": "algorithm_fallback"}
@@ -385,6 +389,7 @@ class CapabilityPlanningAgent:
             "skills": [skill.name for skill in skills if skill.enabled],
             "human_assessment": {
                 "method": diagnosis.get("method"),
+                "personalization_enabled": policy["personalization_enabled"],
                 "overall": diagnosis.get("overall", 0),
                 "confidence": diagnosis.get("confidence", 0),
                 "weakest_dimensions": diagnosis.get("weakest_dimensions", []),
@@ -773,18 +778,30 @@ class CapabilityPlanningAgent:
         active = {name: value for name, value in requirement.items() if value > 0}
         mass = sum(active.values()) or 1
         fit = sum(weight * min(1.0, subject.capability.get(name, 0) / max(weight, .01)) for name, weight in active.items()) / mass
-        human_gap = sum(weight * (weight - human_vector.get(name, .5)) for name, weight in active.items()) / mass
-        overload = max((need - human_vector.get(name, .5) for name, need in active.items()), default=0)
+        personalized = bool(policy.get("personalization_enabled", True))
+        human_gap = (
+            sum(weight * (weight - human_vector.get(name, .5)) for name, weight in active.items()) / mass
+            if personalized else 0.0
+        )
+        overload = (
+            max((need - human_vector.get(name, .5) for name, need in active.items()), default=0)
+            if personalized else 0.0
+        )
         target = float(policy["comfort_target_gap"])
         bandwidth = max(.05, float(policy["comfort_bandwidth"]))
         human_comfort = exp(-((human_gap - target) / bandwidth) ** 2)
-        complementarity = sum(
-            need * max(0.0, min(need - human_vector.get(name, .5), subject.capability.get(name, 0) - human_vector.get(name, .5)))
-            for name, need in active.items()
-        ) / mass
+        complementarity = (
+            sum(
+                need * max(0.0, min(need - human_vector.get(name, .5), subject.capability.get(name, 0) - human_vector.get(name, .5)))
+                for name, need in active.items()
+            ) / mass
+            if personalized else 0.0
+        )
         suitability = {fit.subject_type: fit.suitability for fit in subtask.subject_suitability}
         type_prior = suitability.get(subject.subject_type, self._default_type_prior(subtask.task_type, subject.subject_type))
-        comfort = human_comfort if subject.subject_type == SubjectType.HUMAN else min(1.0, .72 + .28 * max(0, complementarity))
+        comfort = (
+            human_comfort if subject.subject_type == SubjectType.HUMAN else min(1.0, .72 + .28 * max(0, complementarity))
+        ) if personalized else 1.0
         score = (
             weights["fit"] * (.72 * fit + .28 * type_prior)
             + weights["reliability"] * subject.reliability
@@ -799,7 +816,7 @@ class CapabilityPlanningAgent:
             score -= .22
         if subtask.risk >= .75 and subject.subject_type == SubjectType.HUMAN:
             score += .1
-        if subject.subject_type == SubjectType.HUMAN and overload > float(policy["human_overload_limit"]):
+        if personalized and subject.subject_type == SubjectType.HUMAN and overload > float(policy["human_overload_limit"]):
             score -= .3 * min(1.0, overload)
         score = max(0.0, min(1.0, score))
         explanation = (
@@ -991,6 +1008,8 @@ class CapabilityPlanningAgent:
         subjects: list[CapabilitySubject],
         human_vector: dict[str, float],
     ) -> dict[str, Any] | None:
+        if not human_vector:
+            return None
         machines = [subject for subject in subjects if subject.subject_type != SubjectType.HUMAN]
         if not machines:
             return None
@@ -1029,6 +1048,18 @@ class CapabilityPlanningAgent:
             if edge.edge_type != EdgeType.LOOP:
                 counts[edge.source] = counts.get(edge.source, 0) + 1
         return sum(count > 1 for count in counts.values())
+
+    @staticmethod
+    def _objective_for_mode(weights: dict[str, float], personalized: bool) -> dict[str, float]:
+        if personalized:
+            return weights
+        result = dict(weights)
+        personalization_mass = result.get("comfort", 0) + result.get("complementarity", 0)
+        result["comfort"] = 0.0
+        result["complementarity"] = 0.0
+        result["fit"] = result.get("fit", 0) + personalization_mass * .7
+        result["reliability"] = result.get("reliability", 0) + personalization_mass * .3
+        return result
 
     @staticmethod
     def _normalise_config(config: AgentRuntimeConfig | dict[str, Any] | None) -> dict[str, Any]:
