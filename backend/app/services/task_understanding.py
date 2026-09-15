@@ -3,7 +3,13 @@ import hashlib
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from app.schemas.domain import CapabilityRequirement, Subtask, TaskGraph
+from app.schemas.domain import (
+    CapabilityRequirement,
+    ExecutionMode,
+    IterationPolicy,
+    Subtask,
+    TaskGraph,
+)
 
 
 class GeneratedSubtask(BaseModel):
@@ -32,14 +38,95 @@ class TaskUnderstandingEngine:
         text = prompt.lower()
         subtasks: list[Subtask] = []
 
+        def previous() -> list[str]:
+            return [subtasks[-1].id] if subtasks else []
+
         if any(word in text for word in ["数据", "data", "成绩", "csv"]):
             subtasks.append(Subtask(id="prepare", name="数据准备", description="校验、清洗并构造可用特征", task_type="data_processing", requirement=CapabilityRequirement(data_processing=.95, prediction=.35), risk=.2))
-        if any(word in text for word in ["预测", "分类", "风险", "forecast", "predict"]):
-            subtasks.append(Subtask(id="predict", name="模型预测", description="对结构化特征执行预测并输出不确定性", task_type="prediction", requirement=CapabilityRequirement(prediction=.95, interpretation=.65), dependencies=[subtasks[-1].id] if subtasks else [], risk=.45))
-        if any(word in text for word in ["建议", "解释", "报告", "生成", "explain", "generate"]):
-            subtasks.append(Subtask(id="explain", name="解释与建议生成", description="将分析结果转化为符合领域约束的解释", task_type="generation", requirement=CapabilityRequirement(reasoning=.9, generation=.95, interpretation=.9, domain_knowledge=.7), dependencies=[subtasks[-1].id] if subtasks else [], risk=.55))
+
+        learning_assessment = any(word in text for word in ["知识水平", "薄弱知识", "薄弱点", "掌握情况", "学情", "能力水平", "学习水平"])
+        if learning_assessment:
+            subtasks.append(Subtask(
+                id="diagnose-level",
+                name="学习水平诊断",
+                description="根据已有表现识别已掌握内容、薄弱知识点与诊断置信度",
+                task_type="prediction",
+                requirement=CapabilityRequirement(prediction=.82, interpretation=.86, domain_knowledge=.72, data_processing=.62),
+                dependencies=previous(),
+                risk=.45,
+            ))
+        elif any(word in text for word in ["预测", "分类", "风险", "forecast", "predict"]):
+            subtasks.append(Subtask(id="predict", name="模型预测", description="对结构化特征执行预测并输出不确定性", task_type="prediction", requirement=CapabilityRequirement(prediction=.95, interpretation=.65), dependencies=previous(), risk=.45))
+
+        practice_generation = any(word in text for word in ["练习", "训练题", "习题", "学习任务"])
+        summary_generation = any(word in text for word in ["总结", "最终报告", "总结报告"])
+        if practice_generation:
+            subtasks.append(Subtask(
+                id="generate-practice",
+                name="薄弱点练习生成",
+                description="针对每个薄弱知识点生成难度适配、目标明确的练习任务",
+                task_type="generation",
+                requirement=CapabilityRequirement(reasoning=.8, generation=.96, interpretation=.82, domain_knowledge=.78),
+                dependencies=previous(),
+                risk=.35,
+                execution_mode=ExecutionMode.CONDITIONAL if learning_assessment else ExecutionMode.SEQUENTIAL,
+                entry_condition="weak_points_exist == true" if learning_assessment else None,
+            ))
+
+        human_practice = practice_generation and any(
+            word in text for word in ["完成每个练习", "完成练习", "学生完成", "用户完成", "作答"]
+        )
+        if human_practice:
+            subtasks.append(Subtask(
+                id="human-practice",
+                name="学习者完成练习",
+                description="学习者完成当前练习并提交作答过程、答案与主观困难",
+                task_type="human_action",
+                requirement=CapabilityRequirement(domain_knowledge=.58, human_judgement=.65),
+                dependencies=previous(),
+                risk=.15,
+            ))
+
+        evaluation = any(word in text for word in ["检查学习效果", "检查效果", "学习效果", "是否达标", "达到目标", "效果评价"])
+        if evaluation:
+            loop_target = "generate-practice" if practice_generation else None
+            iterative = bool(loop_target and any(word in text for word in ["继续调整", "重新生成", "直到", "循环", "迭代"] ))
+            subtasks.append(Subtask(
+                id="evaluate-progress",
+                name="学习效果检查",
+                description="依据练习结果计算达标状态、薄弱点变化和下一轮调整信号",
+                task_type="evaluation",
+                requirement=CapabilityRequirement(data_processing=.78, prediction=.68, interpretation=.72),
+                dependencies=previous(),
+                risk=.3,
+                execution_mode=ExecutionMode.ITERATIVE if iterative else ExecutionMode.SEQUENTIAL,
+                iteration_policy=IterationPolicy(
+                    enabled=iterative,
+                    feedback_target_subtask_id=loop_target if iterative else None,
+                    condition="goal_reached == false and max_iterations_reached == false",
+                    max_iterations=3,
+                ),
+            ))
+
+        general_generation = any(word in text for word in ["建议", "解释", "生成", "explain", "generate"])
+        if general_generation and not practice_generation and not summary_generation:
+            subtasks.append(Subtask(id="explain", name="解释与建议生成", description="将分析结果转化为符合领域约束的解释", task_type="generation", requirement=CapabilityRequirement(reasoning=.9, generation=.95, interpretation=.9, domain_knowledge=.7), dependencies=previous(), risk=.55))
+
         if any(word in text for word in ["审核", "复核", "教师", "专家", "责任", "human"]):
-            subtasks.append(Subtask(id="review", name="人类专业复核", description="结合真实情境校准输出并承担最终判断责任", task_type="human_review", requirement=CapabilityRequirement(domain_knowledge=.95, human_judgement=.98, interpretation=.75), dependencies=[subtasks[-1].id] if subtasks else [], risk=.85))
+            subtasks.append(Subtask(id="review", name="人类专业复核", description="结合真实情境校准输出并承担最终判断责任", task_type="human_review", requirement=CapabilityRequirement(domain_knowledge=.95, human_judgement=.98, interpretation=.75), dependencies=previous(), risk=.85))
+
+        if summary_generation:
+            subtasks.append(Subtask(
+                id="summary-report",
+                name="学习总结报告",
+                description="汇总初始诊断、练习过程、能力变化、达标结果与后续建议",
+                task_type="generation",
+                requirement=CapabilityRequirement(reasoning=.72, generation=.92, interpretation=.88),
+                dependencies=previous(),
+                risk=.3,
+                execution_mode=ExecutionMode.CONDITIONAL if evaluation else ExecutionMode.SEQUENTIAL,
+                entry_condition="goal_reached == true or max_iterations_reached == true" if evaluation else None,
+            ))
         if not subtasks:
             subtasks.append(Subtask(id="reason", name="任务推理与生成", description="分析任务并生成结构化结果", task_type="reasoning", requirement=CapabilityRequirement(reasoning=.9, generation=.8), risk=.4))
 
