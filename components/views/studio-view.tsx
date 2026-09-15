@@ -83,7 +83,7 @@ function defaultConfig(kind: AgentKind): Record<string, unknown> {
 }
 
 interface PlanningSession {
-  session_id: string;
+  session_id?: string | null;
   task_id: string;
   status?: "awaiting_answers" | "diagnosed" | "completed";
   assessment_enabled?: boolean;
@@ -195,7 +195,7 @@ export function StudioView({
   };
 
   const submitAssessment = async (answers: Record<string,number>) => {
-    if (!planningSession) return;
+    if (!planningSession?.session_id) return;
     setDiagnosingAssessment(true);
     try {
       const result = await apiFetch<{
@@ -218,7 +218,7 @@ export function StudioView({
   };
 
   const startPlanningFromDiagnosis = async () => {
-    if (!planningSession || !diagnosis) return;
+    if (!planningSession?.session_id || !diagnosis) return;
     setPlanningWorkflow(true);
     try {
       const result = await apiFetch<{
@@ -239,7 +239,7 @@ export function StudioView({
   };
 
   const cancelAssessment = async () => {
-    if (!planningSession || diagnosingAssessment || planningWorkflow) return;
+    if (!planningSession?.session_id || diagnosingAssessment || planningWorkflow) return;
     if (diagnosis) {
       setPlanningSession(null);
       setDiagnosis(null);
