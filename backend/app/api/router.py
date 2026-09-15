@@ -438,11 +438,12 @@ async def create_workflow_from_diagnosis(
         raise HTTPException(status_code=404, detail="Task not found")
     graph = TaskGraph.model_validate(session_state.get("task_graph"))
 
-    plan = capability_planning_agent.run(
+    plan = await capability_planning_agent.run_async(
         graph,
         payload.capability_space,
         diagnosis,
         payload.weights,
+        await model_config_for(db, user_id),
         (session_state.get("agent_overrides") or {}).get(capability_planning_agent.name),
     )
     workflow = Workflow(
