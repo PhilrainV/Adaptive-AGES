@@ -117,3 +117,8 @@ orchestration service.
 Replace the development JWT secret, add Alembic migrations to the release process, configure an object store/model registry for ML artifacts, add LangGraph checkpoint persistence, and route all credentials through a secret manager. Human decisions should be authorized by task/workspace membership and logged with immutable audit metadata.
 
 See [Architecture](docs/ARCHITECTURE.md) and [API](docs/API.md) for extension details.
+
+
+## Research agent architecture
+
+See [Planning agents](docs/PLANNING_AGENTS.md) for prompts, skills, cognitive diagnosis and optimizer extension points.

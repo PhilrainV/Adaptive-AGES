@@ -11,6 +11,19 @@ class SubjectType(StrEnum):
     TOOL = "tool"
 
 
+class ExecutionMode(StrEnum):
+    SEQUENTIAL = "sequential"
+    PARALLEL = "parallel"
+    CONDITIONAL = "conditional"
+    ITERATIVE = "iterative"
+
+
+class EdgeType(StrEnum):
+    DEFAULT = "default"
+    CONDITIONAL = "conditional"
+    LOOP = "loop"
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     display_name: str = Field(min_length=2, max_length=120)
@@ -20,6 +33,23 @@ class UserCreate(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class AgentSkill(BaseModel):
+    """A user-supplied instruction block injected into one planning agent."""
+
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=500)
+    instructions: str = Field(default="", max_length=4000)
+    enabled: bool = True
+
+
+class AgentRuntimeConfig(BaseModel):
+    """Per-session extension point; safe defaults live beside each agent."""
+
+    system_prompt: str | None = Field(default=None, max_length=12000)
+    skills: list[AgentSkill] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCreate(BaseModel):
@@ -41,6 +71,20 @@ class CapabilityRequirement(BaseModel):
     data_processing: float = 0
 
 
+class SubjectSuitability(BaseModel):
+    subject_type: SubjectType
+    suitability: float = Field(ge=0, le=1)
+    role: str = "executor"
+    rationale: str = ""
+
+
+class IterationPolicy(BaseModel):
+    enabled: bool = False
+    feedback_target_subtask_id: str | None = None
+    condition: str = "needs_revision == true"
+    max_iterations: int = Field(default=1, ge=1, le=10)
+
+
 class Subtask(BaseModel):
     id: str
     name: str
@@ -49,6 +93,13 @@ class Subtask(BaseModel):
     requirement: CapabilityRequirement
     dependencies: list[str] = Field(default_factory=list)
     risk: float = 0
+    subject_suitability: list[SubjectSuitability] = Field(default_factory=list)
+    preferred_subject_types: list[SubjectType] = Field(default_factory=list)
+    unsuitable_subject_types: list[SubjectType] = Field(default_factory=list)
+    assignment_rationale: str = ""
+    execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
+    entry_condition: str | None = None
+    iteration_policy: IterationPolicy = Field(default_factory=IterationPolicy)
 
 
 class TaskGraph(BaseModel):
@@ -57,6 +108,8 @@ class TaskGraph(BaseModel):
     complexity: float = Field(ge=0, le=1)
     subtasks: list[Subtask]
     planning_mode: str = "rule"
+    assignment_summary: dict[str, list[str]] = Field(default_factory=dict)
+    analysis_trace: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskUnderstandRequest(BaseModel):
@@ -89,7 +142,16 @@ class PlanRequest(BaseModel):
     task_graph: TaskGraph
     capability_space: list[CapabilitySubject]
     user_profile: dict[str, float] = Field(default_factory=dict)
-    weights: dict[str, float] = Field(default_factory=lambda: {"fit": .65, "reliability": .2, "cost": .1, "latency": .05})
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "fit": .42,
+            "reliability": .15,
+            "comfort": .18,
+            "complementarity": .12,
+            "cost": .08,
+            "latency": .05,
+        }
+    )
 
 
 class WorkflowNode(BaseModel):
@@ -107,6 +169,8 @@ class WorkflowEdge(BaseModel):
     source: str
     target: str
     condition: str | None = None
+    edge_type: EdgeType = EdgeType.DEFAULT
+    max_iterations: int = Field(default=1, ge=1, le=10)
 
 
 class WorkflowPlan(BaseModel):
@@ -151,7 +215,7 @@ class NodeModelSettingsUpdate(ModelSettingsUpdate):
 
 
 class PlanningStartRequest(TaskUnderstandRequest):
-    pass
+    agent_overrides: dict[str, AgentRuntimeConfig] = Field(default_factory=dict)
 
 
 class PlanningDiagnoseRequest(BaseModel):
@@ -161,5 +225,20 @@ class PlanningDiagnoseRequest(BaseModel):
 class PlanningCreateWorkflowRequest(BaseModel):
     capability_space: list[CapabilitySubject]
     weights: dict[str, float] = Field(
-        default_factory=lambda: {"fit": .65, "reliability": .2, "cost": .1, "latency": .05}
+        default_factory=lambda: {
+            "fit": .42,
+            "reliability": .15,
+            "comfort": .18,
+            "complementarity": .12,
+            "cost": .08,
+            "latency": .05,
+        }
     )
+
+
+class HumanAssessmentGenerateRequest(BaseModel):
+    design_requirement: str = Field(min_length=8)
+
+
+class HumanAssessmentSubmitRequest(BaseModel):
+    answers: dict[str, int]

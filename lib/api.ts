@@ -93,7 +93,13 @@ export interface WorkflowPlan {
   id: string;
   task_id: string;
   nodes: WorkflowPlanNode[];
-  edges: Array<{ source: string; target: string; condition?: string | null }>;
+  edges: Array<{
+    source: string;
+    target: string;
+    condition?: string | null;
+    edge_type?: "default" | "conditional" | "loop";
+    max_iterations?: number;
+  }>;
   decision_trace: Array<Record<string, unknown>>;
   estimated_cost: number;
   requires_human: boolean;

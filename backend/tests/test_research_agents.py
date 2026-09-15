@@ -1,0 +1,178 @@
+import pytest
+
+from app.agents import (
+    AbilityDiagnosisAgent,
+    CapabilityPlanningAgent,
+    ProblemAnalysisAgent,
+    TestGenerationAgent,
+)
+from app.schemas.domain import (
+    AgentRuntimeConfig,
+    AgentSkill,
+    CapabilityRequirement,
+    CapabilitySubject,
+    EdgeType,
+    ExecutionMode,
+    IterationPolicy,
+    SubjectSuitability,
+    SubjectType,
+    Subtask,
+    TaskGraph,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowPlan,
+)
+from app.services.human_assessment import HumanCapabilityAssessmentService
+from app.workflow.langgraph_engine import LangGraphExecutionEngine
+
+
+@pytest.mark.asyncio
+async def test_problem_agent_persists_subject_analysis_control_flow_and_custom_skill():
+    agent = ProblemAnalysisAgent()
+    graph = await agent.run(
+        "分析学生数据，预测风险，生成建议并由教师复核",
+        agent_config=AgentRuntimeConfig(
+            skills=[AgentSkill(name="education_safety", instructions="保留教师最终责任")]
+        ),
+    )
+
+    assert all(item.subject_suitability for item in graph.subtasks)
+    assert set(graph.assignment_summary) == {"llm", "ml", "human", "tool"}
+    assert "education_safety" in graph.analysis_trace[0]["skills"]
+    review = next(item for item in graph.subtasks if item.task_type == "human_review")
+    assert review.execution_mode == ExecutionMode.ITERATIVE
+    assert review.iteration_policy.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_test_generation_produces_an_identifiable_q_matrix():
+    graph = await ProblemAnalysisAgent().run("分析学生数据，预测风险，生成建议并由教师复核")
+    questions, mode = await TestGenerationAgent().run(graph)
+
+    TestGenerationAgent.validate_blueprint(questions)
+    assert len(questions) == 10
+    assert mode == "dina_rule"
+    assert all(item["knowledge_components"] for item in questions)
+    assert all("guess" in item and "slip" in item for item in questions)
+
+
+def test_bayesian_dina_estimates_attribute_mastery_instead_of_raw_accuracy():
+    questions = HumanCapabilityAssessmentService().generate("构建教育风险预测与教师复核系统")
+    correct = {item["id"]: item["correct_index"] for item in questions}
+    weak_programming = dict(correct)
+    for item in questions:
+        if item["dimension"] == "programming":
+            weak_programming[item["id"]] = (item["correct_index"] + 1) % 4
+
+    strong = AbilityDiagnosisAgent().run(questions, correct)
+    diagnosed = AbilityDiagnosisAgent().run(questions, weak_programming)
+
+    assert diagnosed["method"] == "bayesian_dina"
+    assert diagnosed["capability"]["programming"] < strong["capability"]["programming"]
+    assert diagnosed["q_matrix_coverage"]["programming"] == 2
+    assert len(diagnosed["top_mastery_patterns"]) == 5
+    assert 0 <= diagnosed["confidence"] <= 1
+
+
+def test_global_planner_balances_subjects_and_preserves_non_linear_flow():
+    fit = lambda kind, score: SubjectSuitability(subject_type=kind, suitability=score)
+    graph = TaskGraph(
+        task_id="task-1",
+        goal="预测、解释并复核",
+        complexity=.8,
+        subtasks=[
+            Subtask(
+                id="prepare", name="准备", description="清洗数据", task_type="data_processing",
+                requirement=CapabilityRequirement(data_processing=.95),
+                subject_suitability=[fit(SubjectType.TOOL, .95), fit(SubjectType.ML, .8)],
+                preferred_subject_types=[SubjectType.TOOL],
+            ),
+            Subtask(
+                id="predict", name="预测", description="预测风险", task_type="prediction",
+                requirement=CapabilityRequirement(prediction=.95, data_processing=.7), dependencies=["prepare"],
+                subject_suitability=[fit(SubjectType.ML, .98), fit(SubjectType.LLM, .4)],
+                preferred_subject_types=[SubjectType.ML], execution_mode=ExecutionMode.PARALLEL,
+            ),
+            Subtask(
+                id="explain", name="解释", description="生成解释", task_type="generation",
+                requirement=CapabilityRequirement(reasoning=.85, generation=.95), dependencies=["prepare"],
+                subject_suitability=[fit(SubjectType.LLM, .98), fit(SubjectType.HUMAN, .65)],
+                preferred_subject_types=[SubjectType.LLM], execution_mode=ExecutionMode.PARALLEL,
+            ),
+            Subtask(
+                id="review", name="复核", description="教师复核", task_type="human_review", risk=.9,
+                requirement=CapabilityRequirement(human_judgement=.95, domain_knowledge=.9), dependencies=["predict", "explain"],
+                subject_suitability=[fit(SubjectType.HUMAN, .99), fit(SubjectType.LLM, .45)],
+                preferred_subject_types=[SubjectType.HUMAN], execution_mode=ExecutionMode.ITERATIVE,
+                iteration_policy=IterationPolicy(enabled=True, feedback_target_subtask_id="explain", max_iterations=2),
+            ),
+        ],
+    )
+    subjects = [
+        CapabilitySubject(id="llm", name="LLM", subject_type=SubjectType.LLM, capability={"reasoning":.96,"generation":.98,"interpretation":.9}),
+        CapabilitySubject(id="ml", name="ML", subject_type=SubjectType.ML, capability={"prediction":.98,"data_processing":.9}),
+        CapabilitySubject(id="human", name="Human", subject_type=SubjectType.HUMAN, capability={}, reliability=.9, cost=.7, latency=.8),
+        CapabilitySubject(id="tool", name="Tool", subject_type=SubjectType.TOOL, capability={"data_processing":.99}, cost=.03, latency=.03),
+    ]
+    diagnosis = {
+        "method":"bayesian_dina", "overall":.62, "confidence":.8,
+        "weakest_dimensions":["programming"],
+        "planning_capability":{"reasoning":.65,"generation":.62,"prediction":.35,"data_processing":.3,"human_judgement":.86,"domain_knowledge":.82,"interpretation":.7},
+    }
+
+    plan = CapabilityPlanningAgent().run(graph, subjects, diagnosis)
+    selected = {item.subtask_id: item.subject_type for item in plan.nodes}
+
+    assert selected["predict"] == SubjectType.ML
+    assert selected["explain"] == SubjectType.LLM
+    assert selected["review"] == SubjectType.HUMAN
+    assert any(edge.edge_type == EdgeType.LOOP for edge in plan.edges)
+    assert plan.decision_trace[0]["agent"] == "capability_planning_agent"
+    assert plan.decision_trace[1]["workflow_topology"]["parallel_fan_outs"] >= 1
+
+
+def test_condition_evaluator_is_bounded_and_does_not_use_eval():
+    engine = LangGraphExecutionEngine()
+    assert engine._condition_matches("confidence < 0.7", {"confidence": .4}, {}) is True
+    assert engine._condition_matches("needs_revision == true", {"needs_revision": True}, {}) is True
+    assert engine._condition_matches("__import__('os').system('echo unsafe')", {}, {}) is False
+
+
+@pytest.mark.asyncio
+async def test_langgraph_executes_a_bounded_feedback_loop():
+    nodes = [
+        WorkflowNode(
+            id=name,
+            subtask_id=name,
+            subject_id="tool",
+            subject_type=SubjectType.TOOL,
+            label=name,
+            match_score=1,
+            config={"connector": "passthrough"},
+        )
+        for name in ["prepare", "generate", "review"]
+    ]
+    plan = WorkflowPlan(
+        id="workflow-loop",
+        task_id="task-loop",
+        nodes=nodes,
+        edges=[
+            WorkflowEdge(source="prepare", target="generate"),
+            WorkflowEdge(source="generate", target="review"),
+            WorkflowEdge(
+                source="review",
+                target="generate",
+                condition="payload.revise == true",
+                edge_type=EdgeType.LOOP,
+                max_iterations=2,
+            ),
+        ],
+        decision_trace=[],
+        estimated_cost=0,
+        requires_human=False,
+    )
+
+    result = await LangGraphExecutionEngine().execute(plan, "execution-loop", {"revise": True})
+
+    assert result["status"] == "completed"
+    assert result["iteration_counts"]["review->generate"] == 2

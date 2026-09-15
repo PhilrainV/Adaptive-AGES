@@ -6,7 +6,9 @@ import pytest
 from app.agents.ability_diagnosis_agent import AbilityDiagnosisAgent
 from app.agents.capability_planning_agent import CapabilityPlanningAgent
 from app.agents.problem_analysis_agent import ProblemAnalysisAgent
-from app.agents.test_generation_agent import TestGenerationAgent as AssessmentTestGenerationAgent
+from app.agents.test_generation_agent import (
+    TestGenerationAgent as AssessmentTestGenerationAgent,
+)
 from app.executors.registry import ExecutorRegistry
 from app.schemas.domain import (
     CapabilitySubject,
@@ -24,10 +26,32 @@ from app.workflow.langgraph_engine import LangGraphExecutionEngine
 
 def sample_plan() -> WorkflowPlan:
     return WorkflowPlan(
-        id="workflow-1", task_id="task-1", estimated_cost=.1, requires_human=False, decision_trace=[],
+        id="workflow-1",
+        task_id="task-1",
+        estimated_cost=.1,
+        requires_human=False,
+        decision_trace=[],
         nodes=[
-            WorkflowNode(id="prepare", subtask_id="prepare", subject_id="tool", subject_type=SubjectType.TOOL, label="准备", match_score=.9, config={"connector":"passthrough"}),
-            WorkflowNode(id="predict", subtask_id="predict", subject_id="ml", subject_type=SubjectType.ML, label="预测", match_score=.9, config={"code":"def run(payload, upstream):\n    return {'ok': True}\n"}),
+            WorkflowNode(
+                id="prepare",
+                subtask_id="prepare",
+                subject_id="tool",
+                subject_type=SubjectType.TOOL,
+                label="准备",
+                match_score=.9,
+                config={"connector": "passthrough"},
+            ),
+            WorkflowNode(
+                id="predict",
+                subtask_id="predict",
+                subject_id="ml",
+                subject_type=SubjectType.ML,
+                label="预测",
+                match_score=.9,
+                config={
+                    "code": "def run(payload, upstream):\n    return {'ok': True}\n"
+                },
+            ),
         ],
         edges=[WorkflowEdge(source="prepare", target="predict")],
     )
@@ -43,8 +67,6 @@ def test_task_adaptive_assessment_updates_multiple_dimensions():
     assert "教育数据预测" in questions[0]["prompt"]
 
 
-
-
 def test_diagnosis_and_planning_requests_are_separate_stages():
     diagnosis_request = PlanningDiagnoseRequest(answers={"question-1": 2})
     planning_request = PlanningCreateWorkflowRequest(capability_space=[])
@@ -52,13 +74,15 @@ def test_diagnosis_and_planning_requests_are_separate_stages():
     assert diagnosis_request.model_dump() == {"answers": {"question-1": 2}}
     assert "capability_space" not in PlanningDiagnoseRequest.model_fields
     assert "answers" not in PlanningCreateWorkflowRequest.model_fields
+    assert planning_request.capability_space == []
+
 
 @pytest.mark.asyncio
 async def test_four_planning_agents_form_an_assessment_first_pipeline():
     graph = await ProblemAnalysisAgent().run("分析学生数据，预测风险并由教师复核")
     questions, mode = await AssessmentTestGenerationAgent().run(graph)
     answers = {item["id"]: item["correct_index"] for item in questions}
-    diagnosis = AbilityDiagnosisAgent().run(questions, answers)
+    diagnosis = AbilityDiagnosisAgent().run(questions, answers, graph)
     subjects = [
         CapabilitySubject(
             id="llm",
@@ -88,9 +112,10 @@ async def test_four_planning_agents_form_an_assessment_first_pipeline():
     ]
     plan = CapabilityPlanningAgent().run(graph, subjects, diagnosis)
 
-    assert mode == "rule"
-    assert diagnosis["overall"] == 1
-    assert diagnosis["planning_capability"]["human_judgement"] == 1
+    assert mode == "dina_rule"
+    assert diagnosis["method"] == "bayesian_dina"
+    assert diagnosis["overall"] > .85
+    assert diagnosis["planning_capability"]["human_judgement"] > .85
     assert plan.task_id == graph.task_id
     assert plan.decision_trace[0]["agent"] == "capability_planning_agent"
 
@@ -100,13 +125,18 @@ def test_export_contains_runner_graph_and_editable_ml_module():
     content = export_workflow_bundle(plan, "Test Workflow")
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         names = set(archive.namelist())
-        assert {"workflow.json", "run_workflow.py", "input.json", "nodes/predict.py"} <= names
+        assert {
+            "workflow.json",
+            "run_workflow.py",
+            "input.json",
+            "nodes/predict.py",
+        } <= names
         assert b"def run" in archive.read("nodes/predict.py")
 
 
 @pytest.mark.asyncio
 async def test_langgraph_execution_finishes_without_external_model():
     engine = LangGraphExecutionEngine(ExecutorRegistry())
-    result = await engine.execute(sample_plan(), "execution-1", {"features":[[1, 2]]})
+    result = await engine.execute(sample_plan(), "execution-1", {"features": [[1, 2]]})
     assert result["status"] == "completed"
     assert set(result["node_outputs"]) == {"prepare", "predict"}
