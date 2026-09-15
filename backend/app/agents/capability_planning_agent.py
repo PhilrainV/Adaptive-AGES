@@ -1043,6 +1043,8 @@ class CapabilityPlanningAgent:
             "generation": SubjectType.LLM,
             "reasoning": SubjectType.LLM,
             "human_review": SubjectType.HUMAN,
+            "human_action": SubjectType.HUMAN,
+            "evaluation": SubjectType.TOOL,
             "tool": SubjectType.TOOL,
         }.get(task_type, SubjectType.LLM)
         return .85 if subject_type == preferred else .45
