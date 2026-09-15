@@ -50,19 +50,31 @@ injection, and parameters such as `mastery_prior`, `default_guess`, `default_sli
 
 File: `backend/app/agents/capability_planning_agent.py`
 
-- Calibrates Human subjects with the current task's cognitive diagnosis.
-- Uses beam search to optimize the whole assignment instead of greedily selecting
-  the best subject for each node independently.
+- Runs a five-stage hybrid pipeline: LLM candidate generation, multi-objective
+  optimization, LLM plus deterministic Critic review, automatic constraint repair,
+  and final utility-based selection.
+- The LLM receives the persisted task graph, cognitive diagnosis, available
+  subjects and enabled custom Skills. It proposes multiple genuinely different
+  workflow strategies rather than directly producing the final graph.
+- Calibrates Human subjects with the current task's cognitive diagnosis and uses
+  beam-search baselines to prevent unconstrained model output from becoming a plan.
 - The objective includes absolute requirement coverage, problem-analysis subject
   prior, reliability, user comfort, machine complementarity, cost, latency, risk
   governance, subject load and type diversity.
 - Adds structured machine scaffolding to human nodes when the user's diagnosed
   gap is material.
-- Synthesizes parallel fan-outs, conditional edges and bounded feedback loops from
-  the persisted task analysis. High-risk machine work receives a human checkpoint.
+- The Critic checks coverage, invalid or unsuitable assignments, human overload,
+  parallel opportunities, missing branch conditions, failure/review paths and
+  bounded loops. Deterministic repair is applied before candidates are ranked.
+- Persists every candidate, objective score, Critic issue, repair and final
+  selection in `decision_trace` so the decision can be audited and reproduced.
+- When no model API is configured or a provider call fails, the same pipeline falls
+  back to three deterministic strategies instead of blocking workflow creation.
 
-Extension points: `DEFAULT_WEIGHTS`, `DEFAULT_POLICY`, `_score_candidate`,
-`_optimise`, `_synthesise`, and `_node_config`.
+Extension points: `DEFAULT_SYSTEM_PROMPT`, `DEFAULT_CRITIC_PROMPT`, `DEFAULT_SKILLS`,
+`DEFAULT_WEIGHTS`, `DEFAULT_POLICY`, `_generate_llm_candidates`,
+`_criticise_with_llm`, `_score_candidate`, `_repair_candidate`, `_optimise`,
+`_synthesise`, and `_node_config`.
 
 ## Per-session prompt, skill and parameter overrides
 
@@ -93,7 +105,17 @@ are stored with the planning session and are reused by diagnosis and planning.
       }
     },
     "capability_planning_agent": {
+      "system_prompt": "优先生成可解释且适合教师实际操作的多主体候选工作流。",
+      "skills": [
+        {
+          "name": "education_accountability",
+          "description": "教育决策责任边界",
+          "instructions": "高风险学生决策必须由教师确认，并保留机器建议证据。",
+          "enabled": true
+        }
+      ],
       "parameters": {
+        "candidate_count": 4,
         "beam_width": 96,
         "comfort_target_gap": 0.05,
         "human_overload_limit": 0.2,
