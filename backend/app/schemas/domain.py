@@ -215,6 +215,18 @@ class NodeModelSettingsUpdate(ModelSettingsUpdate):
 
 
 class PlanningStartRequest(TaskUnderstandRequest):
+    assessment_enabled: bool = True
+    capability_space: list[CapabilitySubject] = Field(default_factory=list)
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "fit": .42,
+            "reliability": .15,
+            "comfort": .18,
+            "complementarity": .12,
+            "cost": .08,
+            "latency": .05,
+        }
+    )
     agent_overrides: dict[str, AgentRuntimeConfig] = Field(default_factory=dict)
 
 
