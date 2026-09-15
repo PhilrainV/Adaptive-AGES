@@ -7,6 +7,7 @@ researchers can replace individual components without touching API routes.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from math import exp
 from typing import Any
@@ -28,6 +29,8 @@ from app.schemas.domain import (
     WorkflowNode,
     WorkflowPlan,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_WEIGHTS = {
     "fit": .42,
@@ -256,7 +259,8 @@ class CapabilityPlanningAgent:
                     "model": model_config.get("model"),
                     "candidate_count": len(proposals.candidates),
                 }
-            except Exception as exc:  # noqa: BLE001 - retain auditable algorithm fallback
+            except Exception as exc:
+                logger.warning("LLM candidate generation failed; using algorithm candidates", exc_info=True)
                 generation_meta = {
                     "mode": "algorithm_fallback",
                     "reason": type(exc).__name__,
@@ -278,7 +282,8 @@ class CapabilityPlanningAgent:
                     "model": (model_config or {}).get("model"),
                     "review_count": len(critiques.critiques),
                 }
-            except Exception as exc:  # noqa: BLE001 - deterministic critic remains authoritative
+            except Exception as exc:
+                logger.warning("LLM workflow critique failed; using constraint critic", exc_info=True)
                 critic_meta = {
                     "mode": "deterministic_fallback",
                     "reason": type(exc).__name__,
