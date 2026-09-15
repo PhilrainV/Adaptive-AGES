@@ -19,7 +19,7 @@ interface ProfileData {
 
 const pipeline = [
   {title:"问题解析 Agent",text:"识别任务目标、子任务、风险与能力需求。",icon:SearchCheck},
-  {title:"测试生成 Agent",text:"用户点击“自动规划”后，针对当前问题动态出题。",icon:Sparkles},
+  {title:"测试生成 Agent",text:"用户选择“测试后规划”时，针对当前问题动态出题。",icon:Sparkles},
   {title:"能力诊断 Agent",text:"根据本次答题证据计算人的能力与置信度。",icon:BrainCircuit},
   {title:"任务规划 Agent",text:"综合任务需求和诊断结果分配人、LLM、ML 与工具。",icon:GitBranch},
 ];
@@ -35,7 +35,7 @@ export function ProfileView() {
   }, []);
 
   return <>
-    <div className="section-heading"><div><p className="eyebrow">Human Capability Model</p><h2>基于任务测试证据的用户画像</h2><p>这里仅展示已经诊断出的能力；能力测试在用户输入问题并点击“自动规划”后触发。</p></div></div>
+    <div className="section-heading"><div><p className="eyebrow">Human Capability Model</p><h2>基于任务测试证据的用户画像</h2><p>这里仅展示已经诊断出的能力；用户选择“测试后规划”时才会生成能力测试，直接规划不会读取或更新画像。</p></div></div>
     <div className="profile-grid">
       <section className="panel profile-card">
         <div className="profile-identity"><div className="profile-avatar">PW</div><div><h3 className="profile-name">当前工作区用户</h3><p className="profile-role">Human Agent · 由实际测试证据更新</p></div></div>
