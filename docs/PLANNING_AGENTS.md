@@ -1,7 +1,11 @@
 # Adaptive planning research agents
 
-Automatic planning is intentionally split into four persisted stages. Each agent
-owns one research question and exposes local constants plus a per-session override.
+Automatic planning exposes two user-selected paths. Assessment-first mode runs
+all four persisted agents in order and pauses after diagnosis for confirmation.
+Direct mode runs ProblemAnalysisAgent and CapabilityPlanningAgent only; it neither
+reads nor updates a user profile, and disables personalized comfort/complementarity
+objectives. Each agent owns one research question and exposes local constants plus
+a per-session override.
 
 ## 1. ProblemAnalysisAgent
 
