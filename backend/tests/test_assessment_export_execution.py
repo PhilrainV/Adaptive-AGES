@@ -14,6 +14,7 @@ from app.schemas.domain import (
     CapabilitySubject,
     PlanningCreateWorkflowRequest,
     PlanningDiagnoseRequest,
+    PlanningStartRequest,
     SubjectType,
     WorkflowEdge,
     WorkflowNode,
@@ -75,6 +76,26 @@ def test_diagnosis_and_planning_requests_are_separate_stages():
     assert "capability_space" not in PlanningDiagnoseRequest.model_fields
     assert "answers" not in PlanningCreateWorkflowRequest.model_fields
     assert planning_request.capability_space == []
+
+
+def test_planning_start_supports_assessment_and_direct_modes():
+    assessed = PlanningStartRequest(prompt="分析问题并在测试后规划")
+    direct = PlanningStartRequest(
+        prompt="分析问题后直接生成规划",
+        assessment_enabled=False,
+        capability_space=[
+            CapabilitySubject(
+                id="llm",
+                name="LLM",
+                subject_type=SubjectType.LLM,
+                capability={"reasoning": .9, "generation": .9},
+            )
+        ],
+    )
+
+    assert assessed.assessment_enabled is True
+    assert direct.assessment_enabled is False
+    assert direct.capability_space[0].id == "llm"
 
 
 @pytest.mark.asyncio
