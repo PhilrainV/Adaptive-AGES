@@ -113,7 +113,7 @@ class ProblemAnalysisAgent:
             subtasks = self._clean_subtasks(result.subtasks)
             if not subtasks:
                 raise ValueError("problem analysis returned no valid subtasks")
-            if self._requires_decomposition(prompt) and len(subtasks) < 3:
+            if not self._coverage_is_sufficient(prompt, subtasks):
                 raise ValueError("multi-stage requirement was under-decomposed")
             graph = TaskGraph(
                 task_id=hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12],
@@ -272,6 +272,37 @@ class ProblemAnalysisAgent:
         action_count = sum(any(marker in text for marker in group) for group in action_groups)
         control_flow = any(marker in text for marker in ["如果", "完成后", "仍然", "直到", "否则", "if ", "until", "after"])
         return action_count >= 3 or (action_count >= 2 and control_flow)
+
+    @staticmethod
+    def _coverage_is_sufficient(prompt: str, subtasks: list[Subtask]) -> bool:
+        if ProblemAnalysisAgent._requires_decomposition(prompt) and len(subtasks) < 3:
+            return False
+        text = prompt.lower()
+        if any(marker in text for marker in ["如果", "否则", "if "]) and not any(
+            item.entry_condition for item in subtasks
+        ):
+            return False
+        if any(marker in text for marker in ["直到", "循环", "迭代", "重新生成", "继续调整", "until", "iterate"]) and not any(
+            item.iteration_policy.enabled for item in subtasks
+        ):
+            return False
+        explicit_human_action = any(
+            marker in text
+            for marker in ["完成每个练习", "完成练习", "学生完成", "用户完成", "作答", "人工填写"]
+        )
+        if explicit_human_action and not any(
+            item.task_type in {"human_action", "human_review"}
+            or SubjectType.HUMAN in item.preferred_subject_types
+            for item in subtasks
+        ):
+            return False
+        practice_and_summary = any(marker in text for marker in ["练习", "习题", "训练题"]) and any(
+            marker in text for marker in ["总结", "最终报告", "summary", "report"]
+        )
+        return not (
+            practice_and_summary
+            and sum(item.task_type == "generation" for item in subtasks) < 2
+        )
 
     def _analysis_trace(self, subtasks: list[Subtask], skills: list[AgentSkill], mode: str) -> list[dict[str, Any]]:
         return [{
