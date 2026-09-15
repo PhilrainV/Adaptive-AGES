@@ -37,14 +37,17 @@ Base URL: `/api/v1`. Protected routes use `Authorization: Bearer <token>`.
 }
 ```
 
-The problem-analysis agent returns a task graph and the test-generation agent returns task-specific questions. No workflow is created yet.
+The problem-analysis agent returns a task graph containing capability requirements, LLM/ML/Human/Tool suitability and control-flow proposals. The test-generation agent returns task-specific questions plus a Q matrix and initial item parameters. Optional `agent_overrides` can supply a custom system prompt, skills and algorithm parameters. No workflow is created yet.
 
-2. After the user answers every question, `POST /planning-sessions/{id}/diagnose` runs only the ability-diagnosis agent. It persists the evidence-backed diagnosis and returns it to the client. No workflow exists at this point.
+2. After the user answers every question, `POST /planning-sessions/{id}/diagnose` runs only the ability-diagnosis agent. The default estimator is Bayesian DINA: it returns posterior mastery probabilities, diagnostic confidence, Q-matrix coverage and item residuals. It persists the evidence-backed diagnosis and returns it to the client. No workflow exists at this point.
 
-3. After the user reviews the result and explicitly confirms planning, `POST /planning-sessions/{id}/plan` passes the stored task graph and diagnosis to the capability-planning agent. Only this request creates the workflow. Every trace entry records the chosen subject, normalized score, reasons, and alternatives.
+3. After the user reviews the result and explicitly confirms planning, `POST /planning-sessions/{id}/plan` passes the stored task graph and diagnosis to the capability-planning agent. A global beam-search objective balances requirement coverage, user comfort, machine complementarity, reliability, risk, cost, latency and subject load. Only this request creates the workflow, including justified parallel, conditional and bounded iterative edges.
 
 4. The client may edit and persist the plan with `PUT /workflows/{id}`. `POST /workflows/{id}/execute`
 compiles the saved DAG. A human node changes the execution state to `waiting_for_human`.
 
 5. `GET /workflows/{id}/export` produces a ZIP with an executable Python runner, graph definition,
 input example, environment template and separate ML-node modules. Secrets are never exported.
+
+
+Agent prompts, skills, diagnostic models and optimizer extension points are documented in [PLANNING_AGENTS.md](PLANNING_AGENTS.md).

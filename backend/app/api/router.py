@@ -261,13 +261,25 @@ async def start_planning_session(
     db.add(task)
     await db.flush()
     model_config = await model_config_for(db, user_id)
-    graph = await problem_analysis_agent.run(payload.prompt, model_config)
+    agent_overrides = {
+        name: config.model_dump(mode="json")
+        for name, config in payload.agent_overrides.items()
+    }
+    graph = await problem_analysis_agent.run(
+        payload.prompt,
+        model_config,
+        agent_overrides.get(problem_analysis_agent.name),
+    )
     graph.task_id = task.id
     task.complexity = graph.complexity
     task.task_type = graph.subtasks[-1].task_type
     db.add(TaskGraphRecord(task_id=task.id, graph=graph.model_dump(mode="json")))
 
-    questions, generation_mode = await test_generation_agent.run(graph, model_config)
+    questions, generation_mode = await test_generation_agent.run(
+        graph,
+        model_config,
+        agent_overrides.get(test_generation_agent.name),
+    )
     assessment_record = HumanAssessment(
         user_id=user_id,
         design_requirement=payload.prompt,
@@ -276,6 +288,7 @@ async def start_planning_session(
             "task_id": task.id,
             "task_graph": graph.model_dump(mode="json"),
             "test_generation_mode": generation_mode,
+            "agent_overrides": agent_overrides,
         },
         status="awaiting_answers",
     )
@@ -338,7 +351,14 @@ async def diagnose_planning_session(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    diagnosis = ability_diagnosis_agent.run(record.questions, payload.answers)
+    graph = TaskGraph.model_validate(session_state.get("task_graph"))
+    agent_overrides = session_state.get("agent_overrides") or {}
+    diagnosis = ability_diagnosis_agent.run(
+        record.questions,
+        payload.answers,
+        graph,
+        agent_overrides.get(ability_diagnosis_agent.name),
+    )
     record.answers = payload.answers
     record.result = {**session_state, "diagnosis": diagnosis}
     record.status = "diagnosed"
@@ -423,6 +443,7 @@ async def create_workflow_from_diagnosis(
         payload.capability_space,
         diagnosis,
         payload.weights,
+        (session_state.get("agent_overrides") or {}).get(capability_planning_agent.name),
     )
     workflow = Workflow(
         owner_id=user_id,
