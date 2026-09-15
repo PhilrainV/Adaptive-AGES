@@ -223,6 +223,47 @@ async def test_hybrid_planner_runs_generation_critic_repair_and_selection(monkey
     assert any(node.subtask_id == "advise-human-check" for node in plan.nodes)
 
 
+def test_direct_planning_does_not_use_a_human_profile_or_comfort_objectives():
+    graph = TaskGraph(
+        task_id="direct-task",
+        goal="直接生成摘要",
+        complexity=.3,
+        subtasks=[
+            Subtask(
+                id="summarise",
+                name="生成摘要",
+                description="总结给定材料",
+                task_type="generation",
+                requirement=CapabilityRequirement(reasoning=.6, generation=.8),
+                preferred_subject_types=[SubjectType.LLM],
+            )
+        ],
+    )
+    plan = CapabilityPlanningAgent().run(
+        graph,
+        [
+            CapabilitySubject(
+                id="llm", name="LLM", subject_type=SubjectType.LLM,
+                capability={"reasoning": .9, "generation": .95},
+            )
+        ],
+        {
+            "method": "assessment_disabled",
+            "personalization_enabled": False,
+            "capability": {},
+            "planning_capability": {},
+            "weakest_dimensions": [],
+            "confidence": 0,
+        },
+    )
+
+    trace = plan.decision_trace[0]
+    assert trace["human_assessment"]["personalization_enabled"] is False
+    assert trace["objective_weights"]["comfort"] == 0
+    assert trace["objective_weights"]["complementarity"] == 0
+    assert all(item["strategy"] != "comfort_first" for item in trace["candidate_decisions"])
+
+
 def test_condition_evaluator_is_bounded_and_does_not_use_eval():
     engine = LangGraphExecutionEngine()
     assert engine._condition_matches("confidence < 0.7", {"confidence": .4}, {}) is True
