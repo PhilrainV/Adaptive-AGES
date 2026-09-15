@@ -414,9 +414,15 @@ class CapabilityPlanningAgent:
         objective: dict[str, float],
         policy: dict[str, Any],
     ) -> list[PlanningCandidate]:
+        personalized = bool(policy.get("personalization_enabled", True))
+        second_variant = (
+            ("舒适区优先", "comfort_first", {**objective, "comfort": max(.32, objective["comfort"]), "cost": objective["cost"] * .6})
+            if personalized
+            else ("可靠性优先", "reliability_first", {**objective, "reliability": max(.3, objective["reliability"]), "cost": objective["cost"] * .7})
+        )
         variants = [
             ("算法基线", "balanced", objective),
-            ("舒适区优先", "comfort_first", {**objective, "comfort": max(.32, objective["comfort"]), "cost": objective["cost"] * .6}),
+            second_variant,
             ("效率优先", "efficiency_first", {**objective, "cost": max(.18, objective["cost"]), "latency": max(.14, objective["latency"])}),
         ]
         return [
