@@ -6,6 +6,12 @@ from app.agents import (
     ProblemAnalysisAgent,
     TestGenerationAgent,
 )
+from app.agents.capability_planning_agent import (
+    CandidateCritiqueSet,
+    CandidateProposal,
+    CandidateProposalSet,
+    ProposedAssignment,
+)
 from app.schemas.domain import (
     AgentRuntimeConfig,
     AgentSkill,
@@ -129,6 +135,92 @@ def test_global_planner_balances_subjects_and_preserves_non_linear_flow():
     assert any(edge.edge_type == EdgeType.LOOP for edge in plan.edges)
     assert plan.decision_trace[0]["agent"] == "capability_planning_agent"
     assert plan.decision_trace[1]["workflow_topology"]["parallel_fan_outs"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_hybrid_planner_runs_generation_critic_repair_and_selection(monkeypatch):
+    graph = TaskGraph(
+        task_id="hybrid-task",
+        goal="生成高风险建议并确认",
+        complexity=.7,
+        subtasks=[
+            Subtask(
+                id="advise",
+                name="生成建议",
+                description="生成需要专业责任确认的建议",
+                task_type="generation",
+                risk=.9,
+                requirement=CapabilityRequirement(reasoning=.8, generation=.9, human_judgement=.7),
+                subject_suitability=[
+                    SubjectSuitability(subject_type=SubjectType.LLM, suitability=.92),
+                    SubjectSuitability(subject_type=SubjectType.HUMAN, suitability=.8),
+                ],
+                preferred_subject_types=[SubjectType.LLM],
+            )
+        ],
+    )
+    subjects = [
+        CapabilitySubject(
+            id="llm", name="LLM", subject_type=SubjectType.LLM,
+            capability={"reasoning": .95, "generation": .98}, reliability=.9,
+        ),
+        CapabilitySubject(
+            id="human", name="Human", subject_type=SubjectType.HUMAN,
+            capability={}, reliability=.9, cost=.7, latency=.8,
+        ),
+    ]
+    diagnosis = {
+        "method": "bayesian_dina",
+        "overall": .58,
+        "confidence": .81,
+        "weakest_dimensions": ["programming"],
+        "planning_capability": {"reasoning": .55, "generation": .5, "human_judgement": .86},
+    }
+    proposals = CandidateProposalSet(candidates=[
+        CandidateProposal(
+            name="机器生成后确认",
+            strategy="quality_first",
+            assignments=[ProposedAssignment(subtask_id="advise", subject_id="llm")],
+        ),
+        CandidateProposal(
+            name="人类直接处理",
+            strategy="human_first",
+            assignments=[ProposedAssignment(subtask_id="advise", subject_id="human")],
+        ),
+    ])
+
+    async def fake_generate(*_args, **_kwargs):
+        return proposals
+
+    async def fake_critic(*_args, **_kwargs):
+        return CandidateCritiqueSet(critiques=[])
+
+    agent = CapabilityPlanningAgent()
+    monkeypatch.setattr(agent, "_generate_llm_candidates", fake_generate)
+    monkeypatch.setattr(agent, "_criticise_with_llm", fake_critic)
+    plan = await agent.run_async(
+        graph,
+        subjects,
+        diagnosis,
+        model_config={"api_key": "test", "model": "mock-model"},
+        agent_config=AgentRuntimeConfig(
+            skills=[AgentSkill(name="education_accountability", instructions="专业建议保留人类责任")]
+        ),
+    )
+
+    trace = plan.decision_trace[0]
+    assert [item["stage"] for item in trace["pipeline"]] == [
+        "candidate_generation",
+        "multi_objective_optimisation",
+        "critic",
+        "constraint_repair",
+        "final_selection",
+    ]
+    assert trace["pipeline"][0]["mode"] == "llm"
+    assert trace["pipeline"][2]["mode"] == "llm_plus_constraints"
+    assert "education_accountability" in trace["skills"]
+    assert any(item["source"] == "llm" for item in trace["candidate_decisions"])
+    assert any(node.subtask_id == "advise-human-check" for node in plan.nodes)
 
 
 def test_condition_evaluator_is_bounded_and_does_not_use_eval():
