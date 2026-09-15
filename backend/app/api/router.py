@@ -250,13 +250,13 @@ async def start_planning_session(
     user_id: CurrentUserId,
     db: DbSession,
 ):
-    """Run agents 1 and 2, then pause so the user can complete the generated test."""
+    """Analyse the problem, then either assess the user or create a direct plan."""
     task = Task(
         owner_id=user_id,
         title=payload.prompt[:120],
         prompt=payload.prompt,
         constraints=payload.constraints,
-        status="assessing",
+        status="assessing" if payload.assessment_enabled else "planning",
     )
     db.add(task)
     await db.flush()
@@ -275,6 +275,98 @@ async def start_planning_session(
     task.task_type = graph.subtasks[-1].task_type
     db.add(TaskGraphRecord(task_id=task.id, graph=graph.model_dump(mode="json")))
 
+    if not payload.assessment_enabled:
+        if not payload.capability_space:
+            raise HTTPException(
+                status_code=400,
+                detail="直接规划模式必须提供可用主体能力空间",
+            )
+        diagnosis = {
+            "method": "assessment_disabled",
+            "personalization_enabled": False,
+            "overall": None,
+            "confidence": 0,
+            "capability": {},
+            "planning_capability": {},
+            "weakest_dimensions": [],
+            "diagnostic_summary": {
+                "source": "none",
+                "reason": "用户关闭了测试生成和能力诊断；规划不读取用户画像",
+            },
+        }
+        plan = await capability_planning_agent.run_async(
+            graph,
+            payload.capability_space,
+            diagnosis,
+            payload.weights,
+            model_config,
+            agent_overrides.get(capability_planning_agent.name),
+        )
+        workflow = Workflow(
+            owner_id=user_id,
+            task_id=task.id,
+            name=f"{task.title} · 直接规划工作流",
+            definition=plan.model_dump(mode="json"),
+            decision_trace={"items": plan.decision_trace},
+            status="ready",
+        )
+        db.add(workflow)
+        await db.flush()
+        plan.id = workflow.id
+        workflow.definition = plan.model_dump(mode="json")
+        task.status = "planned"
+        assessment_record = HumanAssessment(
+            user_id=user_id,
+            design_requirement=payload.prompt,
+            questions=[],
+            answers={},
+            result={
+                "task_id": task.id,
+                "task_graph": graph.model_dump(mode="json"),
+                "assessment_enabled": False,
+                "diagnosis": diagnosis,
+                "agent_overrides": agent_overrides,
+                "workflow_id": workflow.id,
+            },
+            status="completed",
+        )
+        db.add(assessment_record)
+        await db.commit()
+        await db.refresh(assessment_record)
+        return {
+            "session_id": assessment_record.id,
+            "task_id": task.id,
+            "status": "completed",
+            "assessment_enabled": False,
+            "task_graph": graph,
+            "questions": [],
+            "diagnosis": diagnosis,
+            "workflow": plan,
+            "agent_trace": [
+                {
+                    "agent": problem_analysis_agent.name,
+                    "status": "completed",
+                    "summary": f"已解析为 {len(graph.subtasks)} 个子任务",
+                    "mode": graph.planning_mode,
+                },
+                {
+                    "agent": test_generation_agent.name,
+                    "status": "skipped",
+                    "summary": "用户关闭能力测试",
+                },
+                {
+                    "agent": ability_diagnosis_agent.name,
+                    "status": "skipped",
+                    "summary": "未读取或更新用户画像",
+                },
+                {
+                    "agent": capability_planning_agent.name,
+                    "status": "completed",
+                    "summary": f"已直接生成 {len(plan.nodes)} 个协同节点",
+                },
+            ],
+        }
+
     questions, generation_mode = await test_generation_agent.run(
         graph,
         model_config,
@@ -287,6 +379,7 @@ async def start_planning_session(
         result={
             "task_id": task.id,
             "task_graph": graph.model_dump(mode="json"),
+            "assessment_enabled": True,
             "test_generation_mode": generation_mode,
             "agent_overrides": agent_overrides,
         },
@@ -298,8 +391,11 @@ async def start_planning_session(
     return {
         "session_id": assessment_record.id,
         "task_id": task.id,
+        "status": "awaiting_answers",
+        "assessment_enabled": True,
         "task_graph": graph,
         "questions": assessment.public_questions(questions),
+        "workflow": None,
         "agent_trace": [
             {
                 "agent": problem_analysis_agent.name,
