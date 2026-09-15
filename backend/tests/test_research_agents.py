@@ -51,6 +51,37 @@ async def test_problem_agent_persists_subject_analysis_control_flow_and_custom_s
 
 
 @pytest.mark.asyncio
+async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learning_loop():
+    prompt = (
+        "帮我制定学习提升方案。先分析学生当前知识水平，如果存在薄弱知识点，"
+        "针对每个薄弱点生成练习；学生完成练习后检查学习效果，未达到目标则调整并重新生成，"
+        "直到达标或达到最大循环次数，最终生成总结报告。"
+    )
+    graph = await ProblemAnalysisAgent().run(prompt)
+
+    assert len(graph.subtasks) >= 5
+    assert {item.task_type for item in graph.subtasks} >= {
+        "prediction", "generation", "human_action", "evaluation",
+    }
+    assert any(item.entry_condition for item in graph.subtasks)
+    assert any(item.iteration_policy.enabled for item in graph.subtasks)
+    subjects = [
+        CapabilitySubject(id="llm", name="LLM", subject_type=SubjectType.LLM, capability={"reasoning": .96, "generation": .96, "interpretation": .92, "domain_knowledge": .72}),
+        CapabilitySubject(id="ml", name="ML", subject_type=SubjectType.ML, capability={"prediction": .97, "data_processing": .82, "interpretation": .76}),
+        CapabilitySubject(id="human", name="Human", subject_type=SubjectType.HUMAN, capability={"human_judgement": .96, "domain_knowledge": .93, "interpretation": .9}),
+        CapabilitySubject(id="tool", name="Tool", subject_type=SubjectType.TOOL, capability={"data_processing": .98, "prediction": .24, "interpretation": .34}),
+    ]
+    plan = CapabilityPlanningAgent().run(
+        graph,
+        subjects,
+        {"method": "assessment_disabled", "planning_capability": {}, "weakest_dimensions": []},
+    )
+    selected_types = {node.subject_type for node in plan.nodes}
+    assert {SubjectType.LLM, SubjectType.ML, SubjectType.HUMAN} <= selected_types
+    assert any(edge.edge_type == EdgeType.LOOP for edge in plan.edges)
+
+
+@pytest.mark.asyncio
 async def test_test_generation_produces_an_identifiable_q_matrix():
     graph = await ProblemAnalysisAgent().run("分析学生数据，预测风险，生成建议并由教师复核")
     questions, mode = await TestGenerationAgent().run(graph)
