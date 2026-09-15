@@ -315,26 +315,9 @@ async def start_planning_session(
         plan.id = workflow.id
         workflow.definition = plan.model_dump(mode="json")
         task.status = "planned"
-        assessment_record = HumanAssessment(
-            user_id=user_id,
-            design_requirement=payload.prompt,
-            questions=[],
-            answers={},
-            result={
-                "task_id": task.id,
-                "task_graph": graph.model_dump(mode="json"),
-                "assessment_enabled": False,
-                "diagnosis": diagnosis,
-                "agent_overrides": agent_overrides,
-                "workflow_id": workflow.id,
-            },
-            status="completed",
-        )
-        db.add(assessment_record)
         await db.commit()
-        await db.refresh(assessment_record)
         return {
-            "session_id": assessment_record.id,
+            "session_id": None,
             "task_id": task.id,
             "status": "completed",
             "assessment_enabled": False,
