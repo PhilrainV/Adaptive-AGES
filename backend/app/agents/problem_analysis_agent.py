@@ -37,6 +37,10 @@ DEFAULT_SYSTEM_PROMPT = """你是 Adaptive-AGES 的问题解析 Agent。你的�
 3. 给出首选与不适合的主体类型，使规划器能够计算替代方案；
 4. 判断控制流是顺序、并行、条件还是迭代，并在确有证据时给出条件或反馈回路。
 
+当需求中包含多个明确动作、阶段、条件或“完成后/直到”等时序关系时，必须拆成 3—10 个可独立分配和执行的
+子任务，不能把“分析—生成—执行—检查—调整—总结”压缩为一个生成节点。学习者作答、人工填写、教师确认等
+真实人类活动使用 human_action 或 human_review；规则检查、状态判断和接口操作可使用 evaluation 或 tool。
+
 分配原则：LLM 擅长语义推理、生成和非结构化信息处理；ML 擅长稳定的结构化预测、分类和数值计算；
 Human 擅长价值判断、情境知识、责任确认和高风险复核；Tool 擅长确定性接口、检索、转换与执行。
 不要为了图复杂而强行增加分支或循环。只有存在不确定性阈值、审核不通过、缺失数据、反馈修订等真实条件时
@@ -109,6 +113,8 @@ class ProblemAnalysisAgent:
             subtasks = self._clean_subtasks(result.subtasks)
             if not subtasks:
                 raise ValueError("problem analysis returned no valid subtasks")
+            if self._requires_decomposition(prompt) and len(subtasks) < 3:
+                raise ValueError("multi-stage requirement was under-decomposed")
             graph = TaskGraph(
                 task_id=hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12],
                 goal=prompt,
@@ -214,6 +220,8 @@ class ProblemAnalysisAgent:
             "generation": {SubjectType.LLM: .96, SubjectType.HUMAN: .67, SubjectType.ML: .28, SubjectType.TOOL: .25},
             "reasoning": {SubjectType.LLM: .91, SubjectType.HUMAN: .76, SubjectType.ML: .34, SubjectType.TOOL: .25},
             "human_review": {SubjectType.HUMAN: .99, SubjectType.LLM: .46, SubjectType.ML: .22, SubjectType.TOOL: .18},
+            "human_action": {SubjectType.HUMAN: .99, SubjectType.LLM: .12, SubjectType.ML: .08, SubjectType.TOOL: .12},
+            "evaluation": {SubjectType.TOOL: .9, SubjectType.ML: .82, SubjectType.HUMAN: .7, SubjectType.LLM: .62},
             "tool": {SubjectType.TOOL: .98, SubjectType.LLM: .35, SubjectType.ML: .3, SubjectType.HUMAN: .25},
         }
         values = matrix.get(task_type, matrix["reasoning"])
@@ -248,6 +256,22 @@ class ProblemAnalysisAgent:
         )
         control_bonus = sum(item.execution_mode != ExecutionMode.SEQUENTIAL for item in subtasks)
         return round(min(.98, .16 + len(subtasks) * .11 + breadth * .025 + control_bonus * .04), 3)
+
+    @staticmethod
+    def _requires_decomposition(prompt: str) -> bool:
+        text = prompt.lower()
+        action_groups = [
+            ["分析", "诊断", "识别", "assess", "analyse"],
+            ["预测", "分类", "predict", "forecast"],
+            ["生成", "制定", "create", "generate"],
+            ["完成", "作答", "填写", "execute"],
+            ["检查", "评价", "验证", "check", "evaluate"],
+            ["调整", "修订", "重新", "迭代", "循环", "revise", "iterate"],
+            ["总结", "报告", "summary", "report"],
+        ]
+        action_count = sum(any(marker in text for marker in group) for group in action_groups)
+        control_flow = any(marker in text for marker in ["如果", "完成后", "仍然", "直到", "否则", "if ", "until", "after"])
+        return action_count >= 3 or (action_count >= 2 and control_flow)
 
     def _analysis_trace(self, subtasks: list[Subtask], skills: list[AgentSkill], mode: str) -> list[dict[str, Any]]:
         return [{
