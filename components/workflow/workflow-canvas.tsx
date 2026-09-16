@@ -93,9 +93,12 @@ function automaticRouteOffset(
     return lineY >= box.top - 24 && lineY <= box.bottom + 24;
   });
 
-  // Long skip-connections receive a gentle bypass even when the direct segment
-  // narrowly misses a node. This keeps them distinct from the local main path.
-  const relevant = blockers.length ? blockers : between;
+  if (!blockers.length) return 0;
+
+  // Only nodes that really intersect the direct corridor trigger a bypass.
+  // A node merely located between the endpoints but above/below the line must
+  // not turn an otherwise clear forward connection into a large arch.
+  const relevant = blockers;
   const averageLineDelta =
     relevant.reduce((sum, node) => {
       const box = nodeGeometry(node);
@@ -105,8 +108,8 @@ function automaticRouteOffset(
     }, 0) / relevant.length;
   const direction = averageLineDelta >= 0 ? -1 : 1;
   const magnitude = Math.min(
-    170,
-    58 + relevant.length * 15 + Math.abs(targetX - sourceX) * 0.045,
+    122,
+    50 + relevant.length * 13 + Math.abs(targetX - sourceX) * 0.028,
   );
   return direction * magnitude;
 }
