@@ -75,6 +75,22 @@ def _skill_text(skills: list[Any]) -> str:
     return "\n".join(rendered)
 
 
+def _json_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    candidate = value.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start >= 0 and end > start:
+        candidate = candidate[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
 class LLMExecutor(Executor):
     def __init__(self, client: Any | None = None, model_config: dict[str, Any] | None = None):
         self.client = client
@@ -181,6 +197,30 @@ class ToolExecutor(Executor):
                 "validated_responses": valid,
                 "data_quality": {"valid": bool(valid) and not issues, "issues": issues},
                 "target_mastery": float(payload.get("target_mastery", .8)),
+                "executor": "builtin-tool",
+            }
+        if operation == "route_emotion_state":
+            parsed = _json_mapping(_find_value(upstream, "content"))
+            explicit = _find_value(upstream, "emotion_needs_support")
+            if explicit is None:
+                explicit = parsed.get("emotion_needs_support")
+            if explicit is None:
+                explicit = payload.get("emotion_needs_support")
+            score = _find_value(upstream, "emotional_distress_score")
+            if score is None:
+                score = parsed.get("emotional_distress_score", payload.get("emotional_distress_score"))
+            threshold = float(context.config.get("parameters", {}).get("emotion_threshold", .6))
+            needs_support = bool(explicit) if explicit is not None else float(score or 0) >= threshold
+            return {
+                "status": "completed",
+                "emotion_needs_support": needs_support,
+                "selected_route": "emotion_support" if needs_support else "learning_practice",
+                "emotional_distress_score": score,
+                "emotion_evidence": parsed.get("emotion_evidence", _find_value(upstream, "emotion_evidence") or []),
+                "mastery_by_knowledge_point": _find_value(upstream, "mastery_by_knowledge_point"),
+                "overall_mastery": _find_value(upstream, "overall_mastery"),
+                "confidence": _find_value(upstream, "confidence"),
+                "target_mastery": _find_value(upstream, "target_mastery") or payload.get("target_mastery", .8),
                 "executor": "builtin-tool",
             }
         if operation == "validate_exercise_set":

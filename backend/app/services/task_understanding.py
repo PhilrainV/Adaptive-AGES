@@ -53,6 +53,10 @@ class TaskUnderstandingEngine:
         human_practice = practice_generation and any(
             word in text for word in ["完成每个练习", "完成练习", "学生完成", "用户完成", "作答"]
         )
+        emotion_aware = any(
+            word in text
+            for word in ["情绪", "心情", "焦虑", "沮丧", "挫败", "安抚", "emotion", "mood"]
+        )
         if learning_assessment and practice_generation:
             return self._learning_improvement_graph(
                 prompt,
@@ -63,6 +67,7 @@ class TaskUnderstandingEngine:
                 iterative=evaluation and any(
                     word in text for word in ["继续调整", "重新生成", "直到", "循环", "迭代"]
                 ),
+                emotion_aware=emotion_aware,
             )
 
         if any(word in text for word in ["数据", "data", "成绩", "csv"]):
@@ -160,6 +165,7 @@ class TaskUnderstandingEngine:
         human_practice: bool,
         summary_generation: bool,
         iterative: bool,
+        emotion_aware: bool,
     ) -> TaskGraph:
         """Build an executable learning loop with atomic responsibilities.
 
@@ -194,18 +200,84 @@ class TaskUnderstandingEngine:
                 runtime_hints={"algorithm": "beta_binomial_mastery"},
                 risk=.35,
             ),
+        ]
+        if emotion_aware:
+            subtasks.extend([
+                Subtask(
+                    id="assess-emotion",
+                    name="学习情绪评估",
+                    description="依据学生自述、交互文本和行为线索判断当前情绪是否适合继续学习，并说明证据与不确定性",
+                    task_type="reasoning",
+                    requirement=CapabilityRequirement(reasoning=.86, interpretation=.94, domain_knowledge=.68, human_judgement=.58),
+                    dependencies=["validate-evidence"],
+                    input_contract=["learner_message", "emotion_observations[]", "recent_learning_context"],
+                    output_contract=["emotion_needs_support", "emotional_distress_score", "emotion_evidence[]", "assessment_confidence"],
+                    required_skills=["emotion_signal_interpretation", "supportive_language", "uncertainty_reporting"],
+                    acceptance_criteria=["给出明确的布尔路由信号", "结论引用输入证据", "不进行临床诊断或标签化"],
+                    runtime_hints={"model_family": "llm", "output_format": "json"},
+                    execution_mode=ExecutionMode.PARALLEL,
+                    risk=.5,
+                ),
+                Subtask(
+                    id="emotion-router",
+                    name="情绪路线判断",
+                    description="综合情绪评估与知识诊断结果，确定进入情绪支持分支还是学习练习分支",
+                    task_type="evaluation",
+                    requirement=CapabilityRequirement(data_processing=.82, interpretation=.72),
+                    dependencies=["estimate-mastery", "assess-emotion"],
+                    input_contract=["emotion_needs_support", "emotional_distress_score", "mastery_by_knowledge_point{}"],
+                    output_contract=["emotion_needs_support", "selected_route", "mastery_by_knowledge_point{}", "target_mastery"],
+                    required_skills=["deterministic_branch_routing", "evidence_passthrough"],
+                    acceptance_criteria=["只选择一个互斥分支", "保留后续学习诊断所需字段"],
+                    runtime_hints={"operation": "route_emotion_state"},
+                    risk=.2,
+                ),
+                Subtask(
+                    id="emotion-support",
+                    name="情绪安抚与学习支持",
+                    description="在学生情绪状态不适合继续练习时，先提供共情回应、低负担支持和可选择的下一步，不强行布置练习",
+                    task_type="generation",
+                    requirement=CapabilityRequirement(reasoning=.84, generation=.9, interpretation=.92, human_judgement=.72),
+                    dependencies=["emotion-router"],
+                    input_contract=["emotion_evidence[]", "emotional_distress_score", "learner_message"],
+                    output_contract=["support_message", "low_pressure_options[]", "escalation_recommendation", "pause_learning"],
+                    required_skills=["empathetic_response", "psychological_safety", "non_clinical_support"],
+                    acceptance_criteria=["先回应情绪再讨论任务", "不作临床诊断", "高风险信号建议寻求可信任的人或专业支持"],
+                    runtime_hints={"model_family": "llm", "output_format": "json"},
+                    execution_mode=ExecutionMode.CONDITIONAL,
+                    entry_condition="emotion_needs_support == true",
+                    risk=.55,
+                ),
+                Subtask(
+                    id="emotion-support-confirm",
+                    name="学习者确认情绪状态",
+                    description="由学习者确认支持是否有帮助、是否希望暂停，以及何时愿意重新进入学习任务",
+                    task_type="human_action",
+                    requirement=CapabilityRequirement(human_judgement=.92, domain_knowledge=.25),
+                    dependencies=["emotion-support"],
+                    input_contract=["support_message", "low_pressure_options[]"],
+                    output_contract=["support_helpful", "pause_learning", "ready_to_resume", "learner_note"],
+                    required_skills=["learner_self_report"],
+                    acceptance_criteria=["决定权由学习者保留", "允许暂停而不自动进入练习分支"],
+                    runtime_hints={"form": "emotion_support_feedback"},
+                    risk=.15,
+                ),
+            ])
+        subtasks.extend([
             Subtask(
                 id="rank-weak-points",
                 name="薄弱知识点识别与排序",
                 description="依据掌握度、目标差距和证据量识别薄弱知识点并按干预优先级排序",
                 task_type="prediction",
                 requirement=CapabilityRequirement(prediction=.84, interpretation=.84, data_processing=.72),
-                dependencies=["estimate-mastery"],
+                dependencies=["emotion-router" if emotion_aware else "estimate-mastery"],
                 input_contract=["mastery_by_knowledge_point{}", "target_mastery", "confidence"],
                 output_contract=["weak_points[]", "weak_points[].priority", "weak_points_exist"],
                 required_skills=["knowledge_gap_ranking", "evidence_weighting"],
                 acceptance_criteria=["排序同时考虑掌握差距与证据置信度", "无薄弱点时返回明确的false状态"],
                 runtime_hints={"algorithm": "weighted_gap_ranking"},
+                execution_mode=ExecutionMode.CONDITIONAL if emotion_aware else ExecutionMode.SEQUENTIAL,
+                entry_condition="emotion_needs_support == false" if emotion_aware else None,
                 risk=.3,
             ),
             Subtask(
@@ -252,7 +324,7 @@ class TaskUnderstandingEngine:
                 runtime_hints={"operation": "validate_exercise_set"},
                 risk=.2,
             ),
-        ]
+        ])
         last_id = "validate-practice"
         if human_practice:
             subtasks.append(Subtask(

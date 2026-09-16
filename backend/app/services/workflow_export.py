@@ -86,6 +86,37 @@ def run_tool(node, payload, upstream):
             "data_quality": {"valid": bool(valid) and not issues, "issues": issues},
             "target_mastery": float(payload.get("target_mastery", 0.8)),
         }
+    if operation == "route_emotion_state":
+        raw = find_value(upstream, "content")
+        parsed = {}
+        if isinstance(raw, str):
+            candidate = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start >= 0 and end > start:
+                candidate = candidate[start:end + 1]
+            try:
+                value = json.loads(candidate)
+                parsed = value if isinstance(value, dict) else {}
+            except (TypeError, ValueError):
+                parsed = {}
+        explicit = find_value(upstream, "emotion_needs_support")
+        if explicit is None:
+            explicit = parsed.get("emotion_needs_support", payload.get("emotion_needs_support"))
+        score = find_value(upstream, "emotional_distress_score")
+        if score is None:
+            score = parsed.get("emotional_distress_score", payload.get("emotional_distress_score"))
+        threshold = float(config.get("parameters", {}).get("emotion_threshold", 0.6))
+        needs_support = bool(explicit) if explicit is not None else float(score or 0) >= threshold
+        return {
+            "emotion_needs_support": needs_support,
+            "selected_route": "emotion_support" if needs_support else "learning_practice",
+            "emotional_distress_score": score,
+            "emotion_evidence": parsed.get("emotion_evidence", find_value(upstream, "emotion_evidence") or []),
+            "mastery_by_knowledge_point": find_value(upstream, "mastery_by_knowledge_point"),
+            "overall_mastery": find_value(upstream, "overall_mastery"),
+            "confidence": find_value(upstream, "confidence"),
+            "target_mastery": find_value(upstream, "target_mastery") or payload.get("target_mastery", 0.8),
+        }
     if operation == "validate_exercise_set":
         exercises = find_value(upstream, "exercises") or payload.get("exercises") or []
         required = ("question", "answer", "explanation", "knowledge_point")

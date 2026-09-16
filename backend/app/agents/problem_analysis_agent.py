@@ -53,6 +53,9 @@ DEFAULT_SYSTEM_PROMPT = """你是 Adaptive-AGES 的问题解析 Agent。你的�
 Human 擅长价值判断、情境知识、责任确认和高风险复核；Tool 擅长确定性接口、检索、转换与执行。
 不要为了图复杂而强行增加分支或循环。只有存在不确定性阈值、审核不通过、缺失数据、反馈修订等真实条件时
 才使用条件或迭代。依赖必须指向更早出现的子任务；循环只能通过 iteration_policy 回指较早子任务。
+当用户明确给出“条件A走路线A，否则走路线B”时，必须生成一个输出明确路由字段的判断节点，以及从该节点
+出发、条件互斥的两条分支；不能只给后续节点加一个条件后仍排成单链。若其中某条分支包含“直到达标”等要求，
+循环只能位于该分支内部，不能包围另一条分支。
 """
 
 DEFAULT_SKILLS = [
@@ -293,6 +296,24 @@ class ProblemAnalysisAgent:
             item.entry_condition for item in subtasks
         ):
             return False
+        emotion_branch_requested = any(
+            marker in text for marker in ["情绪", "心情", "焦虑", "沮丧", "安抚", "emotion", "mood"]
+        ) and any(marker in text for marker in ["如果", "否则", "路线", "分支", "if "])
+        if emotion_branch_requested:
+            emotional_tasks = [
+                item
+                for item in subtasks
+                if any(
+                    marker in f"{item.id} {item.name} {item.description}".lower()
+                    for marker in ["情绪", "心情", "安抚", "emotion", "mood"]
+                )
+            ]
+            conditions = [item.entry_condition or "" for item in subtasks]
+            complementary_routes = any("== true" in value.lower() for value in conditions) and any(
+                "== false" in value.lower() or value.lower() == "else" for value in conditions
+            )
+            if len(emotional_tasks) < 2 or not complementary_routes:
+                return False
         if any(marker in text for marker in ["直到", "循环", "迭代", "重新生成", "继续调整", "until", "iterate"]) and not any(
             item.iteration_policy.enabled for item in subtasks
         ):

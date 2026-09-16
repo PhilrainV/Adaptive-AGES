@@ -213,3 +213,27 @@ async def test_builtin_learning_tools_validate_and_score_real_payloads():
     )
     assert scored["overall_score"] == 1
     assert scored["score_by_knowledge_point"]["fractions"] == 1
+
+    routed = await tool.execute(
+        {
+            "input": {},
+            "upstream": {
+                "emotion-node": {
+                    "content": '{"emotion_needs_support": true, "emotional_distress_score": 0.82, "emotion_evidence": ["frustrated"]}'
+                },
+                "mastery-node": {
+                    "mastery_by_knowledge_point": {"fractions": .42},
+                    "target_mastery": .8,
+                },
+            },
+        },
+        ExecutionContext(
+            execution_id="run-1",
+            node_id="emotion-router",
+            subject_id="tool",
+            config={"connector": "builtin", "operation": "route_emotion_state"},
+        ),
+    )
+    assert routed["emotion_needs_support"] is True
+    assert routed["selected_route"] == "emotion_support"
+    assert routed["mastery_by_knowledge_point"]["fractions"] == .42

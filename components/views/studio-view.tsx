@@ -1439,6 +1439,9 @@ export function StudioView({
                     <option value="validate_learning_evidence">
                       校验学习证据
                     </option>
+                    <option value="route_emotion_state">
+                      情绪条件路由
+                    </option>
                     <option value="validate_exercise_set">
                       检查练习质量
                     </option>

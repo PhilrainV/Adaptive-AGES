@@ -119,6 +119,49 @@ async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learnin
 
 
 @pytest.mark.asyncio
+async def test_emotion_aware_learning_request_creates_two_exclusive_branches_and_one_loop():
+    prompt = (
+        "帮我制定一个学习提升方案。首先分析学生当前知识水平和情绪，如果情绪不好走情绪安抚路线，"
+        "先把情绪照顾好。如果情绪没有问题，存在薄弱知识点，则针对每个薄弱点生成练习任务；"
+        "完成每个练习后检查学习效果，如果仍未达到目标，则继续调整任务并重新生成练习，直到达到目标水平。"
+        "所以任务要做两个分支，然后其中一个分支有循环。"
+    )
+    graph = await ProblemAnalysisAgent().run(prompt)
+    tasks = {item.id: item for item in graph.subtasks}
+
+    assert tasks["emotion-support"].entry_condition == "emotion_needs_support == true"
+    assert tasks["rank-weak-points"].entry_condition == "emotion_needs_support == false"
+    assert tasks["emotion-support"].dependencies == ["emotion-router"]
+    assert tasks["rank-weak-points"].dependencies == ["emotion-router"]
+    assert tasks["analyse-feedback"].iteration_policy.feedback_target_subtask_id == "design-practice"
+
+    subjects = [
+        CapabilitySubject(id="llm", name="LLM", subject_type=SubjectType.LLM, capability={"reasoning": .96, "generation": .96, "interpretation": .94, "domain_knowledge": .76, "human_judgement": .72}),
+        CapabilitySubject(id="ml", name="ML", subject_type=SubjectType.ML, capability={"prediction": .97, "data_processing": .84, "interpretation": .76}),
+        CapabilitySubject(id="human", name="Human", subject_type=SubjectType.HUMAN, capability={"human_judgement": .96, "domain_knowledge": .9, "interpretation": .9}),
+        CapabilitySubject(id="tool", name="Tool", subject_type=SubjectType.TOOL, capability={"data_processing": .98, "prediction": .24, "interpretation": .72}),
+    ]
+    plan = CapabilityPlanningAgent().run(
+        graph,
+        subjects,
+        {"method": "assessment_disabled", "planning_capability": {}, "weakest_dimensions": []},
+    )
+    router_id = next(node.id for node in plan.nodes if node.subtask_id == "emotion-router")
+    outgoing = [edge for edge in plan.edges if edge.source == router_id]
+
+    assert len(outgoing) == 2
+    assert {edge.condition for edge in outgoing} == {
+        "emotion_needs_support == true",
+        "emotion_needs_support == false",
+    }
+    assert all(edge.edge_type == EdgeType.CONDITIONAL for edge in outgoing)
+    loops = [edge for edge in plan.edges if edge.edge_type == EdgeType.LOOP]
+    assert len(loops) == 1
+    assert loops[0].source == "node-analyse-feedback"
+    assert loops[0].target == "node-design-practice"
+
+
+@pytest.mark.asyncio
 async def test_test_generation_produces_an_identifiable_q_matrix():
     graph = await ProblemAnalysisAgent().run("分析学生数据，预测风险，生成建议并由教师复核")
     questions, mode = await TestGenerationAgent().run(graph)
