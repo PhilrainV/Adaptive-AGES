@@ -1,3 +1,6 @@
+import runpy
+from collections import Counter
+
 import pytest
 
 from app.agents import (
@@ -51,7 +54,7 @@ async def test_problem_agent_persists_subject_analysis_control_flow_and_custom_s
 
 
 @pytest.mark.asyncio
-async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learning_loop():
+async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learning_loop(tmp_path):
     prompt = (
         "帮我制定学习提升方案。先分析学生当前知识水平，如果存在薄弱知识点，"
         "针对每个薄弱点生成练习；学生完成练习后检查学习效果，未达到目标则调整并重新生成，"
@@ -59,7 +62,7 @@ async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learnin
     )
     graph = await ProblemAnalysisAgent().run(prompt)
 
-    assert len(graph.subtasks) >= 5
+    assert len(graph.subtasks) >= 10
     assert {item.task_type for item in graph.subtasks} >= {
         "prediction", "generation", "human_action", "evaluation",
     }
@@ -79,6 +82,40 @@ async def test_problem_agent_repairs_under_decomposition_for_multi_stage_learnin
     selected_types = {node.subject_type for node in plan.nodes}
     assert {SubjectType.LLM, SubjectType.ML, SubjectType.HUMAN} <= selected_types
     assert any(edge.edge_type == EdgeType.LOOP for edge in plan.edges)
+    type_counts = Counter(node.subject_type for node in plan.nodes)
+    assert type_counts[SubjectType.LLM] >= 3
+    assert type_counts[SubjectType.ML] >= 3
+    assert type_counts[SubjectType.TOOL] >= 2
+
+    nodes = {node.subtask_id: node for node in plan.nodes}
+    diagnosis_node = nodes["estimate-mastery"]
+    module_path = tmp_path / "mastery_node.py"
+    module_path.write_text(diagnosis_node.config["code"], encoding="utf-8")
+    namespace = runpy.run_path(module_path)
+    result = namespace["run"](
+        {
+            "responses": [
+                {"knowledge_point": "fractions", "correct": True},
+                {"knowledge_point": "fractions", "correct": False},
+                {"knowledge_point": "algebra", "score": .9},
+            ]
+        },
+        {},
+    )
+    assert result["mastery_by_knowledge_point"]
+    assert diagnosis_node.config["algorithm"] == "beta_binomial_mastery"
+
+    practice_node = nodes["generate-practice"]
+    assert "薄弱点练习生成" in practice_node.config["system_prompt"]
+    assert practice_node.config["skills"]
+    assert "exercises[]" in practice_node.config["output_contract"]
+
+    tool_node = nodes["validate-practice"]
+    assert tool_node.config["connector"] == "builtin"
+    assert tool_node.config["operation"] == "validate_exercise_set"
+
+    human_node = nodes["human-practice"]
+    assert human_node.config["response_schema"]["required_fields"]
 
 
 @pytest.mark.asyncio

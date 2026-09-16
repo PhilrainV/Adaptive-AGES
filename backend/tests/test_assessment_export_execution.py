@@ -9,6 +9,7 @@ from app.agents.problem_analysis_agent import ProblemAnalysisAgent
 from app.agents.test_generation_agent import (
     TestGenerationAgent as AssessmentTestGenerationAgent,
 )
+from app.executors.base import ExecutionContext
 from app.executors.registry import ExecutorRegistry
 from app.schemas.domain import (
     CapabilitySubject,
@@ -153,6 +154,7 @@ def test_export_contains_runner_graph_and_editable_ml_module():
             "nodes/predict.py",
         } <= names
         assert b"def run" in archive.read("nodes/predict.py")
+        assert b"def run_tool" in archive.read("run_workflow.py")
 
 
 @pytest.mark.asyncio
@@ -161,3 +163,53 @@ async def test_langgraph_execution_finishes_without_external_model():
     result = await engine.execute(sample_plan(), "execution-1", {"features": [[1, 2]]})
     assert result["status"] == "completed"
     assert set(result["node_outputs"]) == {"prepare", "predict"}
+
+
+@pytest.mark.asyncio
+async def test_builtin_learning_tools_validate_and_score_real_payloads():
+    registry = ExecutorRegistry()
+    tool = registry.get("tool")
+    validation = await tool.execute(
+        {
+            "input": {
+                "responses": [
+                    {"knowledge_point": "fractions", "correct": True},
+                    {"knowledge_point": "algebra"},
+                ],
+                "target_mastery": .85,
+            },
+            "upstream": {},
+        },
+        ExecutionContext(
+            execution_id="run-1",
+            node_id="validate",
+            subject_id="tool",
+            config={"connector": "builtin", "operation": "validate_learning_evidence"},
+        ),
+    )
+    assert len(validation["validated_responses"]) == 1
+    assert validation["data_quality"]["issues"]
+
+    scored = await tool.execute(
+        {
+            "input": {},
+            "upstream": {
+                "exercise-node": {
+                    "validated_exercises": [
+                        {"id": "q1", "answer": "B", "knowledge_point": "fractions"}
+                    ]
+                },
+                "human-node": {
+                    "learner_responses": [{"exercise_id": "q1", "answer": "b"}]
+                },
+            },
+        },
+        ExecutionContext(
+            execution_id="run-1",
+            node_id="score",
+            subject_id="tool",
+            config={"connector": "builtin", "operation": "score_learning_responses"},
+        ),
+    )
+    assert scored["overall_score"] == 1
+    assert scored["score_by_knowledge_point"]["fractions"] == 1

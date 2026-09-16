@@ -91,6 +91,11 @@ class Subtask(BaseModel):
     description: str
     task_type: str
     requirement: CapabilityRequirement
+    input_contract: list[str] = Field(default_factory=list)
+    output_contract: list[str] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    runtime_hints: dict[str, str] = Field(default_factory=dict)
     dependencies: list[str] = Field(default_factory=list)
     risk: float = 0
     subject_suitability: list[SubjectSuitability] = Field(default_factory=list)

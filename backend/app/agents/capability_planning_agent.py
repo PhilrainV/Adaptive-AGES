@@ -48,7 +48,7 @@ DEFAULT_POLICY = {
     "comfort_bandwidth": .24,
     "human_overload_limit": .22,
     "load_balance_penalty": .045,
-    "type_diversity_bonus": .015,
+    "type_diversity_bonus": 0.0,
     "human_review_risk": .75,
 }
 
@@ -98,6 +98,170 @@ DEFAULT_SKILLS = [
         instructions="只在存在真实触发条件时创建条件或有界循环，同时识别可安全并行的任务。",
     ),
 ]
+
+MASTER_ESTIMATION_CODE = '''"""Executable baseline for knowledge mastery estimation."""
+from collections import defaultdict
+from math import sqrt
+
+
+def _find(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _find(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _find(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def run(payload, upstream):
+    responses = (
+        payload.get("responses")
+        or _find(upstream, "validated_responses")
+        or _find(upstream, "responses")
+    )
+    if not isinstance(responses, list) or not responses:
+        raise ValueError("需要 responses[]，每项至少包含 knowledge_point 和 correct 或 score")
+    evidence = defaultdict(lambda: [0.0, 0])
+    for row in responses:
+        if not isinstance(row, dict) or not row.get("knowledge_point"):
+            continue
+        raw = row.get("score", row.get("correct", 0))
+        score = float(bool(raw)) if isinstance(raw, bool) else max(0.0, min(1.0, float(raw)))
+        evidence[str(row["knowledge_point"])][0] += score
+        evidence[str(row["knowledge_point"])][1] += 1
+    if not evidence:
+        raise ValueError("没有可用于掌握度估计的有效作答记录")
+    mastery = {name: round((total + 1.0) / (count + 2.0), 4) for name, (total, count) in evidence.items()}
+    sample_size = sum(count for _, count in evidence.values())
+    overall = sum(mastery.values()) / len(mastery)
+    return {
+        "mastery_by_knowledge_point": mastery,
+        "overall_mastery": round(overall, 4),
+        "confidence": round(min(1.0, sqrt(sample_size) / 5.0), 4),
+        "sample_size": sample_size,
+        "algorithm": "beta_binomial_mastery_v1",
+    }
+'''
+
+WEAK_POINT_RANKING_CODE = '''"""Rank knowledge gaps from upstream mastery evidence."""
+
+
+def _find(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _find(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _find(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def run(payload, upstream):
+    mastery = _find(upstream, "mastery_by_knowledge_point") or payload.get("mastery_by_knowledge_point")
+    if not isinstance(mastery, dict) or not mastery:
+        raise ValueError("上游必须提供 mastery_by_knowledge_point")
+    target = float(payload.get("target_mastery", _find(upstream, "target_mastery") or 0.8))
+    weak = [
+        {
+            "knowledge_point": str(name),
+            "mastery": round(float(score), 4),
+            "gap": round(max(0.0, target - float(score)), 4),
+        }
+        for name, score in mastery.items()
+        if float(score) < target
+    ]
+    weak.sort(key=lambda item: item["gap"], reverse=True)
+    for index, item in enumerate(weak, 1):
+        item["priority"] = index
+    return {
+        "weak_points": weak,
+        "weak_points_exist": bool(weak),
+        "target_mastery": target,
+        "algorithm": "weighted_gap_ranking_v1",
+    }
+'''
+
+MASTERY_UPDATE_CODE = '''"""Update mastery estimates after one practice round."""
+
+
+def _find(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _find(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _find(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def run(payload, upstream):
+    current = _find(upstream, "score_by_knowledge_point") or payload.get("score_by_knowledge_point")
+    previous = _find(upstream, "mastery_by_knowledge_point") or payload.get("mastery_by_knowledge_point", {})
+    if not isinstance(current, dict) or not current:
+        raise ValueError("上游必须提供 score_by_knowledge_point")
+    target = float(payload.get("target_mastery", _find(upstream, "target_mastery") or 0.8))
+    alpha = float(payload.get("update_weight", 0.65))
+    updated = {}
+    for name, score in current.items():
+        before = float(previous.get(name, 0.5))
+        updated[str(name)] = round((1.0 - alpha) * before + alpha * float(score), 4)
+    remaining = [
+        {"knowledge_point": name, "mastery": score, "gap": round(target - score, 4)}
+        for name, score in updated.items()
+        if score < target
+    ]
+    previous_mean = sum(float(previous.get(name, 0.5)) for name in updated) / len(updated)
+    updated_mean = sum(updated.values()) / len(updated)
+    return {
+        "updated_mastery": updated,
+        "goal_reached": not remaining,
+        "needs_revision": bool(remaining),
+        "remaining_weak_points": remaining,
+        "improvement": round(updated_mean - previous_mean, 4),
+        "target_mastery": target,
+        "algorithm": "weighted_mastery_update_v1",
+    }
+'''
+
+GENERIC_PREDICTION_CODE = '''"""Executable numeric baseline; replace with a validated model when available."""
+
+
+def run(payload, upstream):
+    features = payload.get("features")
+    if not isinstance(features, list) or not features:
+        raise ValueError("需要非空 features[]；可在此模板中接入已验证的模型文件")
+    rows = features if isinstance(features[0], list) else [features]
+    numeric_rows = [[float(value) for value in row] for row in rows]
+    scores = [sum(row) / max(1, len(row)) for row in numeric_rows]
+    threshold = float(payload.get("threshold", 0.5))
+    predictions = [int(score >= threshold) for score in scores]
+    confidence = [round(min(1.0, abs(score - threshold) * 2.0), 4) for score in scores]
+    return {
+        "predictions": predictions,
+        "scores": [round(score, 4) for score in scores],
+        "confidence": confidence,
+        "algorithm": "numeric_threshold_baseline_v1",
+    }
+'''
 
 
 class ProposedAssignment(BaseModel):
@@ -759,7 +923,16 @@ class CapabilityPlanningAgent:
                     subject_load = state.loads.get(candidate.subject.id, 0)
                     type_key = candidate.subject.subject_type.value
                     diversity = float(policy["type_diversity_bonus"]) if not state.type_loads.get(type_key) else 0
-                    load_penalty = float(policy["load_balance_penalty"]) * subject_load
+                    concurrency_factor = (
+                        1.0
+                        if candidate.subtask.execution_mode == ExecutionMode.PARALLEL
+                        else 0.0
+                    )
+                    load_penalty = (
+                        float(policy["load_balance_penalty"])
+                        * subject_load
+                        * concurrency_factor
+                    )
                     utility = state.utility + candidate.score + diversity - load_penalty
                     expanded.append(BeamState(
                         assignments=[*state.assignments, candidate],
@@ -818,6 +991,9 @@ class CapabilityPlanningAgent:
         )
         if subject.subject_type in subtask.preferred_subject_types:
             score += .07
+        runtime_subject = self._runtime_subject_type(subtask)
+        if runtime_subject is not None:
+            score += .16 if subject.subject_type == runtime_subject else -.06
         if subject.subject_type in subtask.unsuitable_subject_types:
             score -= .22
         if subtask.risk >= .75 and subject.subject_type == SubjectType.HUMAN:
@@ -857,7 +1033,7 @@ class CapabilityPlanningAgent:
             main_node[item.id] = node_id
             exit_node[item.id] = node_id
             support = self._best_machine_support(item, subjects, human_vector)
-            config = self._node_config(candidate, support, diagnosis)
+            config = self._node_config(candidate, support, diagnosis, task_graph.goal)
             nodes.append(WorkflowNode(
                 id=node_id,
                 subtask_id=item.id,
@@ -981,32 +1157,131 @@ class CapabilityPlanningAgent:
             requires_human=any(node.subject_type == SubjectType.HUMAN for node in nodes),
         )
 
-    @staticmethod
-    def _node_config(candidate: AssignmentCandidate, support: dict[str, Any] | None, diagnosis: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _node_config(
+        cls,
+        candidate: AssignmentCandidate,
+        support: dict[str, Any] | None,
+        diagnosis: dict[str, Any],
+        workflow_goal: str,
+    ) -> dict[str, Any]:
         item = candidate.subtask
-        base: dict[str, Any] = {"timeout_seconds": 60, "retry": 1, "execution_mode": item.execution_mode.value}
+        skills = item.required_skills or cls._default_runtime_skills(item.task_type)
+        input_contract = item.input_contract or ["payload", "upstream"]
+        output_contract = item.output_contract or ["result", "evidence", "confidence"]
+        acceptance = item.acceptance_criteria or ["输出与节点目标一致", "保留证据和不确定性"]
+        contract_text = json.dumps(
+            {
+                "inputs": input_contract,
+                "outputs": output_contract,
+                "acceptance_criteria": acceptance,
+            },
+            ensure_ascii=False,
+        )
+        base: dict[str, Any] = {
+            "timeout_seconds": 60,
+            "retry": 1,
+            "execution_mode": item.execution_mode.value,
+            "workflow_goal": workflow_goal,
+            "subtask_description": item.description,
+            "input_contract": input_contract,
+            "output_contract": output_contract,
+            "acceptance_criteria": acceptance,
+            "skills": skills,
+            "runtime_hints": item.runtime_hints,
+        }
         if candidate.subject.subject_type == SubjectType.LLM:
             base.update({
-                "system_prompt": "你是可审计的任务执行智能体。引用上游证据，标注不确定性，并严格遵守输出契约。",
-                "prompt_template": f"任务：{item.description}\n用户输入：{{input}}\n上游结果：{{upstream}}",
+                "use_default_model": True,
+                "modality": "text",
+                "system_prompt": (
+                    f"你是工作流中的“{item.name}”执行 Agent。总目标是：{workflow_goal}\n"
+                    f"你的唯一职责是：{item.description}\n"
+                    f"必须使用这些技能：{'、'.join(skills)}。\n"
+                    "只能依据用户输入与上游节点证据完成本节点，不得替代其他节点；"
+                    "缺少关键输入时返回 missing_inputs，不得编造。"
+                    f"严格遵守以下输入输出契约：{contract_text}"
+                ),
+                "prompt_template": (
+                    f"当前节点：{item.name}\n"
+                    f"节点任务：{item.description}\n"
+                    f"验收标准：{'；'.join(acceptance)}\n\n"
+                    "原始用户输入（JSON）：{input}\n"
+                    "上游节点输出（JSON）：{upstream}\n\n"
+                    f"请仅输出包含这些字段的 JSON：{json.dumps(output_contract, ensure_ascii=False)}"
+                ),
                 "temperature": .2,
             })
         elif candidate.subject.subject_type == SubjectType.ML:
             base.update({
                 "runtime": "python",
-                "requirements": ["numpy", "scikit-learn"],
-                "code": "def run(payload, upstream):\n    # 加载已验证模型并返回预测、置信度和版本\n    return {'prediction': None, 'confidence': None, 'upstream': upstream}\n",
+                "requirements": [],
+                "algorithm": item.runtime_hints.get("algorithm", item.task_type),
+                "code": cls._ml_runtime_code(item),
             })
         elif candidate.subject.subject_type == SubjectType.HUMAN:
             base.update({
-                "instruction": f"请完成“{item.description}”，依据检查表记录证据、判断和不确定性。",
-                "approval_criteria": "准确、可解释、符合领域规范并明确责任",
+                "instruction": (
+                    f"工作流目标：{workflow_goal}\n"
+                    f"你需要完成：{item.description}\n"
+                    "操作步骤：1）阅读上游材料；2）按要求完成操作；3）提交结构化结果；"
+                    "4）标记跳过项、困难和不确定性。"
+                ),
+                "approval_criteria": "；".join(acceptance),
+                "response_schema": {"required_fields": output_contract},
                 "comfort_scaffold": support,
                 "diagnosed_weaknesses": diagnosis.get("weakest_dimensions", []),
             })
         else:
-            base.update({"connector": "passthrough", "operation": item.task_type})
+            base.update({
+                "connector": "builtin",
+                "operation": cls._tool_operation(item),
+                "parameters": {
+                    "target_mastery": .8,
+                    "required_fields": input_contract,
+                },
+            })
         return base
+
+    @staticmethod
+    def _default_runtime_skills(task_type: str) -> list[str]:
+        return {
+            "data_processing": ["schema_validation", "data_quality_reporting"],
+            "prediction": ["feature_extraction", "uncertainty_calibration"],
+            "generation": ["evidence_grounding", "structured_json_output"],
+            "reasoning": ["evidence_synthesis", "constraint_following"],
+            "evaluation": ["deterministic_checking", "audit_trail"],
+            "human_action": ["structured_response_collection"],
+            "human_review": ["evidence_review", "accountability_recording"],
+            "tool": ["deterministic_execution"],
+        }.get(task_type, ["evidence_grounding", "structured_output"])
+
+    @staticmethod
+    def _tool_operation(item: Subtask) -> str:
+        hinted = item.runtime_hints.get("operation")
+        if hinted:
+            return hinted
+        text = f"{item.id} {item.name} {item.description}".lower()
+        if "练习" in text and any(word in text for word in ["检查", "质量", "校验"]):
+            return "validate_exercise_set"
+        if "评分" in text or "score" in text:
+            return "score_learning_responses"
+        if item.task_type == "data_processing":
+            return "validate_payload"
+        if item.task_type == "evaluation":
+            return "evaluate_threshold"
+        return "transform"
+
+    @staticmethod
+    def _ml_runtime_code(item: Subtask) -> str:
+        identity = f"{item.id} {item.name} {item.description}".lower()
+        if "estimate-mastery" in identity or "掌握度估计" in identity or "学习水平诊断" in identity:
+            return MASTER_ESTIMATION_CODE
+        if "weak" in identity or "薄弱" in identity:
+            return WEAK_POINT_RANKING_CODE
+        if "update-mastery" in identity or "掌握度更新" in identity or "学习效果" in identity:
+            return MASTERY_UPDATE_CODE
+        return GENERIC_PREDICTION_CODE
 
     def _best_machine_support(
         self,
@@ -1048,6 +1323,20 @@ class CapabilityPlanningAgent:
             "tool": SubjectType.TOOL,
         }.get(task_type, SubjectType.LLM)
         return .85 if subject_type == preferred else .45
+
+    @staticmethod
+    def _runtime_subject_type(subtask: Subtask) -> SubjectType | None:
+        """Honor an explicit executable contract before generic capability similarity."""
+        hints = subtask.runtime_hints
+        if hints.get("operation"):
+            return SubjectType.TOOL
+        if hints.get("algorithm"):
+            return SubjectType.ML
+        if hints.get("model_family"):
+            return SubjectType.LLM
+        if hints.get("form"):
+            return SubjectType.HUMAN
+        return None
 
     @staticmethod
     def _count_fan_outs(edges: list[WorkflowEdge]) -> int:

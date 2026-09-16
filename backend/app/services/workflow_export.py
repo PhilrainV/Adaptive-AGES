@@ -23,11 +23,21 @@ def run_llm(node, payload, upstream):
         raise RuntimeError("请先运行 pip install -r requirements.txt") from exc
     config = node.get("config", {})
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), base_url=os.environ.get("OPENAI_BASE_URL") or None)
+    skills = config.get("skills", [])
+    skill_lines = []
+    for skill in skills:
+        if isinstance(skill, str):
+            skill_lines.append(f"- {skill}")
+        elif isinstance(skill, dict):
+            skill_lines.append(f"- {skill.get('name', 'skill')}: {skill.get('instructions', '')}")
+    system_prompt = config.get("system_prompt", "你是严谨的任务执行智能体。")
+    if skill_lines:
+        system_prompt += "\n\n本节点可用 Skills：\n" + "\n".join(skill_lines)
     response = client.chat.completions.create(
         model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
         temperature=float(config.get("temperature", 0.2)),
         messages=[
-            {"role": "system", "content": config.get("system_prompt", "你是严谨的任务执行智能体。")},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": render(config.get("prompt_template", "{input}\n{upstream}"), payload, upstream)},
         ],
     )
@@ -41,6 +51,86 @@ def run_ml(node, payload, upstream):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.run(payload, upstream)
+
+def find_value(value, key):
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = find_value(child, key)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = find_value(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def run_tool(node, payload, upstream):
+    config = node.get("config", {})
+    operation = config.get("operation", "transform")
+    if operation == "validate_learning_evidence":
+        responses = payload.get("responses") or find_value(upstream, "responses") or []
+        valid, issues = [], []
+        for index, row in enumerate(responses if isinstance(responses, list) else []):
+            if not isinstance(row, dict) or not row.get("knowledge_point"):
+                issues.append({"index": index, "reason": "missing knowledge_point"})
+            elif "correct" not in row and "score" not in row:
+                issues.append({"index": index, "reason": "missing correct or score"})
+            else:
+                valid.append(row)
+        return {
+            "validated_responses": valid,
+            "data_quality": {"valid": bool(valid) and not issues, "issues": issues},
+            "target_mastery": float(payload.get("target_mastery", 0.8)),
+        }
+    if operation == "validate_exercise_set":
+        exercises = find_value(upstream, "exercises") or payload.get("exercises") or []
+        required = ("question", "answer", "explanation", "knowledge_point")
+        valid, issues, seen = [], [], set()
+        for index, item in enumerate(exercises if isinstance(exercises, list) else []):
+            missing = [field for field in required if not isinstance(item, dict) or not item.get(field)]
+            fingerprint = str(item.get("question", "")).strip().lower() if isinstance(item, dict) else ""
+            if missing:
+                issues.append({"index": index, "missing": missing})
+            elif fingerprint in seen:
+                issues.append({"index": index, "reason": "duplicate_question"})
+            else:
+                seen.add(fingerprint)
+                valid.append(item)
+        return {"validated_exercises": valid, "quality": {"valid": bool(valid) and not issues, "issues": issues}}
+    if operation == "score_learning_responses":
+        exercises = find_value(upstream, "validated_exercises") or payload.get("exercises") or []
+        responses = find_value(upstream, "learner_responses") or payload.get("learner_responses") or []
+        answer_key = {str(item.get("id", i)): item for i, item in enumerate(exercises) if isinstance(item, dict)}
+        item_scores, totals = [], {}
+        for index, response in enumerate(responses if isinstance(responses, list) else []):
+            if not isinstance(response, dict):
+                continue
+            item_id = str(response.get("exercise_id", response.get("id", index)))
+            exercise = answer_key.get(item_id, {})
+            score = float(
+                bool(exercise.get("answer"))
+                and str(response.get("answer", "")).strip().casefold()
+                == str(exercise.get("answer", "")).strip().casefold()
+            )
+            knowledge = str(exercise.get("knowledge_point", "unknown"))
+            totals.setdefault(knowledge, []).append(score)
+            item_scores.append({"exercise_id": item_id, "knowledge_point": knowledge, "score": score})
+        by_knowledge = {name: round(sum(values) / len(values), 4) for name, values in totals.items()}
+        overall = round(sum(item["score"] for item in item_scores) / max(1, len(item_scores)), 4)
+        return {"item_scores": item_scores, "score_by_knowledge_point": by_knowledge, "overall_score": overall}
+    if operation == "evaluate_threshold":
+        score = float(find_value(upstream, "overall_score") or payload.get("score", 0))
+        threshold = float(payload.get("threshold", config.get("parameters", {}).get("threshold", 0.8)))
+        return {"score": score, "threshold": threshold, "passed": score >= threshold}
+    if operation == "validate_payload":
+        required = config.get("parameters", {}).get("required_fields", [])
+        missing = [field for field in required if str(field).split(".", 1)[0].replace("[]", "") not in payload]
+        return {"valid": not missing, "missing_fields": missing, "content": payload}
+    return {"payload": payload, "upstream": upstream, "operation": operation}
 
 
 def resolve_path(value, path):
@@ -133,12 +223,15 @@ def main():
         elif kind == "ml":
             result = run_ml(node, payload, upstream)
         elif kind == "human":
-            print(f"\n需要人工处理：{node['label']}\n{node.get('config', {}).get('instruction', '')}")
+            config = node.get("config", {})
+            print(f"\n需要人工处理：{node['label']}\n{config.get('instruction', '')}")
+            print(f"验收标准：{config.get('approval_criteria', '')}")
+            print(f"提交字段：{config.get('response_schema', {}).get('required_fields', [])}")
             human_input = input("请输入复核意见（输入 revise 可触发修订循环）： ")
             needs_revision = human_input.strip().lower() in {"revise", "revision", "修改", "需要修改", "不通过"}
             result = {"human_input": human_input, "needs_revision": needs_revision, "approved": not needs_revision}
         else:
-            result = {"payload": payload, "upstream": upstream}
+            result = run_tool(node, payload, upstream)
         outputs[node_id] = result
         executions += 1
         if executions > 100:

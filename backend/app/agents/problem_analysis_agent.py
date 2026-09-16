@@ -37,9 +37,17 @@ DEFAULT_SYSTEM_PROMPT = """你是 Adaptive-AGES 的问题解析 Agent。你的�
 3. 给出首选与不适合的主体类型，使规划器能够计算替代方案；
 4. 判断控制流是顺序、并行、条件还是迭代，并在确有证据时给出条件或反馈回路。
 
-当需求中包含多个明确动作、阶段、条件或“完成后/直到”等时序关系时，必须拆成 3—10 个可独立分配和执行的
-子任务，不能把“分析—生成—执行—检查—调整—总结”压缩为一个生成节点。学习者作答、人工填写、教师确认等
+当需求中包含多个明确动作、阶段、条件或“完成后/直到”等时序关系时，必须拆成 3—16 个原子、可独立执行的
+子任务，不能把“数据校验—特征构造—诊断—薄弱点排序—策略设计—内容生成—质量检查—执行—评分—更新—
+反馈—总结”压缩为少数按角色命名的节点。同一类主体可以承担多个职责不同的节点；节点数量由真实处理步骤决定，
+绝不能套用“每种主体一个节点”的模板。学习者作答、人工填写、教师确认等
 真实人类活动使用 human_action 或 human_review；规则检查、状态判断和接口操作可使用 evaluation 或 tool。
+
+每个子任务还必须提供：
+- input_contract 与 output_contract：列出可被下一节点消费的字段；
+- required_skills：列出执行该节点所需的具体技能；
+- acceptance_criteria：列出可验证的完成标准；
+- runtime_hints：给出 operation、algorithm、model_family 或 tool 等实现提示。
 
 分配原则：LLM 擅长语义推理、生成和非结构化信息处理；ML 擅长稳定的结构化预测、分类和数值计算；
 Human 擅长价值判断、情境知识、责任确认和高风险复核；Tool 擅长确定性接口、检索、转换与执行。
@@ -67,7 +75,7 @@ DEFAULT_SKILLS = [
 
 
 class GeneratedBreakdown(BaseModel):
-    subtasks: list[Subtask] = Field(min_length=1, max_length=10)
+    subtasks: list[Subtask] = Field(min_length=1, max_length=16)
     assignment_summary: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -135,7 +143,9 @@ class ProblemAnalysisAgent:
         enriched: list[Subtask] = []
         for item in graph.subtasks:
             fits = self._default_suitability(item.task_type, item.risk)
-            preferred = [fit.subject_type for fit in fits if fit.suitability >= .72]
+            preferred = item.preferred_subject_types or [
+                fit.subject_type for fit in fits if fit.suitability >= .72
+            ]
             unsuitable = [fit.subject_type for fit in fits if fit.suitability <= .25]
             iteration = item.iteration_policy
             if item.task_type == "human_review" and enriched:
@@ -175,7 +185,7 @@ class ProblemAnalysisAgent:
     def _clean_subtasks(items: list[Subtask]) -> list[Subtask]:
         seen: set[str] = set()
         cleaned: list[Subtask] = []
-        for index, item in enumerate(items[:10]):
+        for index, item in enumerate(items[:16]):
             item_id = item.id.strip() or f"step-{index + 1}"
             if item_id in seen:
                 item_id = f"{item_id}-{index + 1}"
@@ -275,7 +285,8 @@ class ProblemAnalysisAgent:
 
     @staticmethod
     def _coverage_is_sufficient(prompt: str, subtasks: list[Subtask]) -> bool:
-        if ProblemAnalysisAgent._requires_decomposition(prompt) and len(subtasks) < 3:
+        minimum = ProblemAnalysisAgent._minimum_subtask_count(prompt)
+        if len(subtasks) < minimum:
             return False
         text = prompt.lower()
         if any(marker in text for marker in ["如果", "否则", "if "]) and not any(
@@ -303,6 +314,31 @@ class ProblemAnalysisAgent:
             practice_and_summary
             and sum(item.task_type == "generation" for item in subtasks) < 2
         )
+
+    @staticmethod
+    def _minimum_subtask_count(prompt: str) -> int:
+        text = prompt.lower()
+        action_groups = [
+            ["校验", "准备", "清洗", "validate", "prepare"],
+            ["分析", "诊断", "识别", "assess", "analyse"],
+            ["预测", "分类", "估计", "predict", "forecast"],
+            ["设计", "制定", "规划", "design"],
+            ["生成", "create", "generate"],
+            ["完成", "作答", "填写", "execute"],
+            ["检查", "评价", "评分", "验证", "check", "evaluate"],
+            ["调整", "修订", "重新", "迭代", "循环", "revise", "iterate"],
+            ["总结", "报告", "summary", "report"],
+        ]
+        actions = sum(any(marker in text for marker in group) for group in action_groups)
+        has_loop = any(marker in text for marker in ["直到", "循环", "迭代", "重新生成", "继续调整", "until", "iterate"])
+        has_condition = any(marker in text for marker in ["如果", "否则", "if "])
+        if actions >= 6 and has_loop:
+            return 8
+        if actions >= 4 and (has_loop or has_condition):
+            return 6
+        if ProblemAnalysisAgent._requires_decomposition(prompt):
+            return 3
+        return 1
 
     def _analysis_trace(self, subtasks: list[Subtask], skills: list[AgentSkill], mode: str) -> list[dict[str, Any]]:
         return [{
