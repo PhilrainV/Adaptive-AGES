@@ -114,7 +114,7 @@ function automaticRouteOffset(
   return direction * magnitude;
 }
 
-function roundedReturnPath(
+function roundedLanePath(
   sourceX: number,
   sourceY: number,
   targetX: number,
@@ -123,6 +123,7 @@ function roundedReturnPath(
 ): string {
   const sourceOuterX = sourceX + 34;
   const targetOuterX = targetX - 34;
+  const horizontalDirection = targetX >= sourceX ? 1 : -1;
   const sourceDirection = laneY < sourceY ? -1 : 1;
   const targetDirection = targetY < laneY ? -1 : 1;
   const radius = Math.max(
@@ -137,8 +138,8 @@ function roundedReturnPath(
     `M ${sourceX} ${sourceY}`,
     `C ${sourceX + 18} ${sourceY}, ${sourceOuterX} ${sourceY}, ${sourceOuterX} ${sourceY + sourceDirection * radius}`,
     `L ${sourceOuterX} ${laneY - sourceDirection * radius}`,
-    `Q ${sourceOuterX} ${laneY}, ${sourceOuterX - radius} ${laneY}`,
-    `L ${targetOuterX + radius} ${laneY}`,
+    `Q ${sourceOuterX} ${laneY}, ${sourceOuterX + horizontalDirection * radius} ${laneY}`,
+    `L ${targetOuterX - horizontalDirection * radius} ${laneY}`,
     `Q ${targetOuterX} ${laneY}, ${targetOuterX} ${laneY + targetDirection * radius}`,
     `L ${targetOuterX} ${targetY - targetDirection * radius}`,
     `Q ${targetOuterX} ${targetY}, ${targetX} ${targetY}`,
@@ -216,7 +217,7 @@ const WorkflowEdge = memo(function WorkflowEdge({
     const span = Math.abs(sourceX - targetX);
     const loopY =
       Math.max(sourceY, targetY) + Math.min(112, 66 + span * 0.045);
-    path = roundedReturnPath(sourceX, sourceY, targetX, targetY, loopY);
+    path = roundedLanePath(sourceX, sourceY, targetX, targetY, loopY);
   } else {
     const deltaX = targetX - sourceX;
     const deltaY = targetY - sourceY;
@@ -231,19 +232,11 @@ const WorkflowEdge = memo(function WorkflowEdge({
       );
       path = `M ${sourceX} ${sourceY} C ${sourceX + direction * controlDistance} ${sourceY}, ${targetX - direction * controlDistance} ${targetY}, ${targetX} ${targetY}`;
     } else {
-      const midpointX = (sourceX + targetX) / 2;
-      const midpointY = (sourceY + targetY) / 2 + routeOffset;
-      const handle = Math.max(28, Math.min(130, Math.abs(deltaX) * 0.22));
-      path =
-        deltaX >= 0
-          ? `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX - handle} ${midpointY}, ${midpointX} ${midpointY} C ${midpointX + handle} ${midpointY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`
-          : roundedReturnPath(
-              sourceX,
-              sourceY,
-              targetX,
-              targetY,
-              Math.min(sourceY, targetY) + routeOffset,
-            );
+      const laneY =
+        routeOffset < 0
+          ? Math.min(sourceY, targetY) + routeOffset
+          : Math.max(sourceY, targetY) + routeOffset;
+      path = roundedLanePath(sourceX, sourceY, targetX, targetY, laneY);
     }
   }
   return (
