@@ -76,7 +76,7 @@ function automaticRouteOffset(
   // A backward edge needs a visible detour. Users can change it to a loop edge
   // when it represents iteration, but it must remain readable before that.
   if (targetX <= sourceX + 20) {
-    return -Math.min(170, 86 + Math.abs(targetX - sourceX) * 0.12);
+    return -Math.min(104, 58 + Math.abs(targetX - sourceX) * 0.045);
   }
 
   const between = nodes.filter((node) => {
@@ -109,6 +109,37 @@ function automaticRouteOffset(
     58 + relevant.length * 15 + Math.abs(targetX - sourceX) * 0.045,
   );
   return direction * magnitude;
+}
+
+function roundedReturnPath(
+  sourceX: number,
+  sourceY: number,
+  targetX: number,
+  targetY: number,
+  laneY: number,
+): string {
+  const sourceOuterX = sourceX + 34;
+  const targetOuterX = targetX - 34;
+  const sourceDirection = laneY < sourceY ? -1 : 1;
+  const targetDirection = targetY < laneY ? -1 : 1;
+  const radius = Math.max(
+    12,
+    Math.min(
+      24,
+      Math.abs(laneY - sourceY) / 2,
+      Math.abs(targetY - laneY) / 2,
+    ),
+  );
+  return [
+    `M ${sourceX} ${sourceY}`,
+    `C ${sourceX + 18} ${sourceY}, ${sourceOuterX} ${sourceY}, ${sourceOuterX} ${sourceY + sourceDirection * radius}`,
+    `L ${sourceOuterX} ${laneY - sourceDirection * radius}`,
+    `Q ${sourceOuterX} ${laneY}, ${sourceOuterX - radius} ${laneY}`,
+    `L ${targetOuterX + radius} ${laneY}`,
+    `Q ${targetOuterX} ${laneY}, ${targetOuterX} ${laneY + targetDirection * radius}`,
+    `L ${targetOuterX} ${targetY - targetDirection * radius}`,
+    `Q ${targetOuterX} ${targetY}, ${targetX} ${targetY}`,
+  ].join(" ");
 }
 
 const WorkflowNode = memo(function WorkflowNode({ data, selected }: NodeProps) {
@@ -181,10 +212,8 @@ const WorkflowEdge = memo(function WorkflowEdge({
   if (edgeType === "loop") {
     const span = Math.abs(sourceX - targetX);
     const loopY =
-      Math.max(sourceY, targetY) + Math.max(90, Math.min(180, span * 0.22));
-    const midpointX = (sourceX + targetX) / 2;
-    const handle = Math.max(48, Math.min(120, span * 0.2));
-    path = `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX + handle} ${loopY}, ${midpointX} ${loopY} C ${midpointX - handle} ${loopY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`;
+      Math.max(sourceY, targetY) + Math.min(112, 66 + span * 0.045);
+    path = roundedReturnPath(sourceX, sourceY, targetX, targetY, loopY);
   } else {
     const deltaX = targetX - sourceX;
     const deltaY = targetY - sourceY;
@@ -205,7 +234,13 @@ const WorkflowEdge = memo(function WorkflowEdge({
       path =
         deltaX >= 0
           ? `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX - handle} ${midpointY}, ${midpointX} ${midpointY} C ${midpointX + handle} ${midpointY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`
-          : `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX + handle} ${midpointY}, ${midpointX} ${midpointY} C ${midpointX - handle} ${midpointY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`;
+          : roundedReturnPath(
+              sourceX,
+              sourceY,
+              targetX,
+              targetY,
+              Math.min(sourceY, targetY) + routeOffset,
+            );
     }
   }
   return (
@@ -217,9 +252,11 @@ const WorkflowEdge = memo(function WorkflowEdge({
       style={{
         ...style,
         stroke: color,
-        strokeWidth: selected ? 2.8 : Number(style?.strokeWidth || 1.6),
+        strokeWidth: selected ? 2.2 : Number(style?.strokeWidth || 1.6),
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
         filter: selected
-          ? "drop-shadow(0 0 3px rgb(84 112 96 / 35%))"
+          ? "drop-shadow(0 0 2px rgb(84 112 96 / 22%))"
           : undefined,
       }}
     />
