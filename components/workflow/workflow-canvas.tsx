@@ -41,6 +41,76 @@ const kindStyle = {
   Adaptive: { icon: GitBranch, bg: "#edfad7", color: "#5f8d1f" },
 };
 
+const DEFAULT_NODE_WIDTH = 178;
+const DEFAULT_NODE_HEIGHT = 78;
+
+function nodeGeometry(node: Node<WorkflowNodeData>) {
+  const width = node.measured?.width || node.width || DEFAULT_NODE_WIDTH;
+  const height = node.measured?.height || node.height || DEFAULT_NODE_HEIGHT;
+  return {
+    left: node.position.x,
+    right: node.position.x + width,
+    top: node.position.y,
+    bottom: node.position.y + height,
+    centerX: node.position.x + width / 2,
+    centerY: node.position.y + height / 2,
+  };
+}
+
+function automaticRouteOffset(
+  edge: Edge,
+  nodes: Node<WorkflowNodeData>[],
+): number {
+  if (String(edge.data?.edge_type || "default") === "loop") return 0;
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  if (!source || !target) return 0;
+
+  const sourceBox = nodeGeometry(source);
+  const targetBox = nodeGeometry(target);
+  const sourceX = sourceBox.right;
+  const sourceY = sourceBox.centerY;
+  const targetX = targetBox.left;
+  const targetY = targetBox.centerY;
+
+  // A backward edge needs a visible detour. Users can change it to a loop edge
+  // when it represents iteration, but it must remain readable before that.
+  if (targetX <= sourceX + 20) {
+    return -Math.min(170, 86 + Math.abs(targetX - sourceX) * 0.12);
+  }
+
+  const between = nodes.filter((node) => {
+    if (node.id === source.id || node.id === target.id) return false;
+    const box = nodeGeometry(node);
+    return box.centerX > sourceX && box.centerX < targetX;
+  });
+  if (!between.length) return 0;
+
+  const blockers = between.filter((node) => {
+    const box = nodeGeometry(node);
+    const progress = (box.centerX - sourceX) / (targetX - sourceX);
+    const lineY = sourceY + (targetY - sourceY) * progress;
+    return lineY >= box.top - 24 && lineY <= box.bottom + 24;
+  });
+
+  // Long skip-connections receive a gentle bypass even when the direct segment
+  // narrowly misses a node. This keeps them distinct from the local main path.
+  const relevant = blockers.length ? blockers : between;
+  const averageLineDelta =
+    relevant.reduce((sum, node) => {
+      const box = nodeGeometry(node);
+      const progress = (box.centerX - sourceX) / (targetX - sourceX);
+      const lineY = sourceY + (targetY - sourceY) * progress;
+      return sum + (box.centerY - lineY);
+    }, 0) / relevant.length;
+  const direction = averageLineDelta >= 0 ? -1 : 1;
+  const magnitude = Math.min(
+    170,
+    58 + relevant.length * 15 + Math.abs(targetX - sourceX) * 0.045,
+  );
+  return direction * magnitude;
+}
+
 const WorkflowNode = memo(function WorkflowNode({ data, selected }: NodeProps) {
   const node = data as WorkflowNodeData;
   const style = kindStyle[node.kind];
@@ -112,16 +182,31 @@ const WorkflowEdge = memo(function WorkflowEdge({
     const span = Math.abs(sourceX - targetX);
     const loopY =
       Math.max(sourceY, targetY) + Math.max(90, Math.min(180, span * 0.22));
-    path = `M ${sourceX} ${sourceY} C ${sourceX + 70} ${loopY}, ${targetX - 70} ${loopY}, ${targetX} ${targetY}`;
+    const midpointX = (sourceX + targetX) / 2;
+    const handle = Math.max(48, Math.min(120, span * 0.2));
+    path = `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX + handle} ${loopY}, ${midpointX} ${loopY} C ${midpointX - handle} ${loopY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`;
   } else {
     const deltaX = targetX - sourceX;
-    const direction = deltaX >= 0 ? 1 : -1;
-    const controlDistance = Math.max(
-      70,
-      Math.min(240, Math.abs(deltaX) * 0.42),
-    );
-    const routeOffset = Number(data?.route_offset ?? -18);
-    path = `M ${sourceX} ${sourceY} C ${sourceX + direction * controlDistance} ${sourceY + routeOffset}, ${targetX - direction * controlDistance} ${targetY + routeOffset}, ${targetX} ${targetY}`;
+    const deltaY = targetY - sourceY;
+    const routeOffset = Number(data?.route_offset || 0);
+    if (Math.abs(routeOffset) < 1 && Math.abs(deltaY) <= 6) {
+      path = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
+    } else if (Math.abs(routeOffset) < 1) {
+      const direction = deltaX >= 0 ? 1 : -1;
+      const controlDistance = Math.max(
+        24,
+        Math.min(160, Math.abs(deltaX) * 0.38),
+      );
+      path = `M ${sourceX} ${sourceY} C ${sourceX + direction * controlDistance} ${sourceY}, ${targetX - direction * controlDistance} ${targetY}, ${targetX} ${targetY}`;
+    } else {
+      const midpointX = (sourceX + targetX) / 2;
+      const midpointY = (sourceY + targetY) / 2 + routeOffset;
+      const handle = Math.max(28, Math.min(130, Math.abs(deltaX) * 0.22));
+      path =
+        deltaX >= 0
+          ? `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX - handle} ${midpointY}, ${midpointX} ${midpointY} C ${midpointX + handle} ${midpointY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`
+          : `M ${sourceX} ${sourceY} C ${sourceX + handle} ${sourceY}, ${midpointX + handle} ${midpointY}, ${midpointX} ${midpointY} C ${midpointX - handle} ${midpointY}, ${targetX - handle} ${targetY}, ${targetX} ${targetY}`;
+    }
   }
   return (
     <BaseEdge
@@ -170,8 +255,15 @@ export function WorkflowCanvas({
   const edgeTypes = useMemo(() => ({ workflow: WorkflowEdge }), []);
   const visibleEdges = useMemo(
     () =>
-      edges.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId })),
-    [edges, selectedEdgeId],
+      edges.map((edge) => ({
+        ...edge,
+        selected: edge.id === selectedEdgeId,
+        data: {
+          ...edge.data,
+          route_offset: automaticRouteOffset(edge, nodes),
+        },
+      })),
+    [edges, nodes, selectedEdgeId],
   );
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string }) => onSelect(node.id),

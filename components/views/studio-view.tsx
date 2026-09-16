@@ -219,22 +219,6 @@ function layoutPlan(plan: WorkflowPlan): {
   });
   const edges = plan.edges.map((edge, index) => {
     const edgeType = edge.edge_type || "default";
-    const sourceDepth = depth(edge.source);
-    const targetDepth = depth(edge.target);
-    const span = targetDepth - sourceDepth;
-    const sameSourceIndex = plan.edges
-      .slice(0, index)
-      .filter(
-        (item) =>
-          item.source === edge.source &&
-          (item.edge_type || "default") !== "loop",
-      ).length;
-    const routeOffset =
-      edgeType === "loop"
-        ? 0
-        : Math.abs(span) > 1 || sameSourceIndex > 0
-          ? -(70 + Math.max(0, Math.abs(span) - 2) * 24 + sameSourceIndex * 34)
-          : -18;
     return {
       id: `edge-${index}-${edge.source}-${edge.target}`,
       source: edge.source,
@@ -243,7 +227,6 @@ function layoutPlan(plan: WorkflowPlan): {
         edge_type: edgeType,
         condition: edge.condition || "",
         max_iterations: edge.max_iterations || 1,
-        route_offset: routeOffset,
       },
       ...edgeVisuals(edgeType),
     } as Edge;
@@ -390,15 +373,6 @@ export function StudioView({
         return;
       }
       const id = `manual-edge-${crypto.randomUUID()}`;
-      const source = nodes.find((node) => node.id === connection.source);
-      const target = nodes.find((node) => node.id === connection.target);
-      const existingOutgoing = edges.filter(
-        (edge) => edge.source === connection.source,
-      ).length;
-      const sourceX = source?.position.x || 0;
-      const targetX = target?.position.x || 0;
-      const routeOffset =
-        (targetX >= sourceX ? -1 : 1) * (72 + existingOutgoing * 34);
       setEdges((current) =>
         addEdge(
           {
@@ -408,7 +382,6 @@ export function StudioView({
               edge_type: "default",
               condition: "",
               max_iterations: 1,
-              route_offset: routeOffset,
             },
             ...edgeVisuals("default"),
           },
@@ -418,7 +391,7 @@ export function StudioView({
       setSelectedId("");
       setSelectedEdgeId(id);
     },
-    [edges, nodes, notify, setEdges],
+    [edges, notify, setEdges],
   );
 
   useEffect(() => {
